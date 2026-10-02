@@ -1,0 +1,41 @@
+{
+  "type": "record",
+  "name": "UserEvent",
+  "namespace": "com.recsys.events.v1",
+  "doc": "One user engagement/activity event. Topic events.raw.v1, keyed by user_id.",
+  "fields": [
+    {"name": "event_id", "type": "string", "doc": "Client-generated UUIDv7; dedupe key"},
+    {"name": "user_id", "type": "string"},
+    {"name": "item_id", "type": ["null", "string"], "default": null, "doc": "null for SEARCH"},
+    {"name": "domain", "type": "com.recsys.events.v1.Domain"},
+    {"name": "event_type", "type": {"type": "enum", "name": "EventType", "default": "UNKNOWN",
+      "symbols": ["UNKNOWN", "IMPRESSION", "CLICK", "PLAY_START", "PLAY_END", "SKIP", "REPLAY", "SEEK",
+                  "LIKE", "DISLIKE", "SHARE", "SAVE", "COMMENT", "RATE", "FOLLOW", "NOT_INTERESTED",
+                  "DWELL", "SEARCH", "SEARCH_RESULT_CLICK"]}},
+    {"name": "value", "type": ["null", "double"], "default": null,
+      "doc": "PLAY_END/SKIP: seconds listened; RATE: 1-5; DWELL: seconds"},
+    {"name": "event_ts", "type": {"type": "long", "logicalType": "timestamp-millis"}, "doc": "Client time, clamped to received_ts + 60s"},
+    {"name": "received_ts", "type": {"type": "long", "logicalType": "timestamp-millis"}, "doc": "Server receive time"},
+    {"name": "session_id", "type": "string"},
+    {"name": "context", "type": {"type": "record", "name": "EventContext", "fields": [
+      {"name": "device", "type": {"type": "enum", "name": "Device",
+        "symbols": ["UNKNOWN", "IOS", "ANDROID", "WEB", "DESKTOP", "TV", "SPEAKER"], "default": "UNKNOWN"}, "default": "UNKNOWN"},
+      {"name": "app_version", "type": ["null", "string"], "default": null},
+      {"name": "country", "type": ["null", "string"], "default": null, "doc": "ISO-3166 alpha-2"},
+      {"name": "tz_offset_min", "type": ["null", "int"], "default": null},
+      {"name": "surface", "type": ["null", "string"], "default": null, "doc": "home, next_track, radio, search"},
+      {"name": "referrer", "type": ["null", "string"], "default": null},
+      {"name": "autoplay", "type": ["null", "boolean"], "default": null}
+    ]}},
+    {"name": "media", "type": ["null", {"type": "record", "name": "MediaProgress", "fields": [
+      {"name": "position_ms", "type": ["null", "long"], "default": null},
+      {"name": "duration_ms", "type": ["null", "long"], "default": null},
+      {"name": "seek_from_ms", "type": ["null", "long"], "default": null},
+      {"name": "seek_to_ms", "type": ["null", "long"], "default": null}
+    ]}], "default": null},
+    {"name": "recommendation_id", "type": ["null", "string"], "default": null},
+    {"name": "position", "type": ["null", "int"], "default": null, "doc": "Slot in the served list"},
+    {"name": "variant_id", "type": ["null", "string"], "default": null},
+    {"name": "search_query_id", "type": ["null", "string"], "default": null, "doc": "No raw query text (PII)"}
+  ]
+}

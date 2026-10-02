@@ -1,0 +1,11 @@
+**/build
+**/build.nosync
+**/*.nosync
+.gradle
+**/.gradle
+.idea
+.vscode
+*.md
+!README.md
+docs
+ml/.venv

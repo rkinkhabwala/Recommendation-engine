@@ -1,0 +1,129 @@
+package com.recsys.catalog;
+
+import java.sql.Array;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Timestamp;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Optional;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
+
+@Repository
+public class CatalogRepository {
+  private final JdbcClient jdbc;
+
+  public CatalogRepository(JdbcClient jdbc) {
+    this.jdbc = jdbc;
+  }
+
+  /**
+   * Inserts or updates; {@code seq} increments only when content actually changed, so idempotent
+   * client retries do not create new versions. Returns the stored row when it changed.
+   */
+  @Transactional
+  public Optional<CatalogItemDto> upsert(CatalogItemDto i) {
+    return jdbc.sql(
+            """
+            INSERT INTO items (item_id, domain, title, creator_id, creator_name, genres, mood_tags,
+                               duration_ms, release_date, explicit, available_regions, description)
+            VALUES (:id, :domain, :title, :cid, :cname, :genres, :moods, :dur, :rel, :explicit, :regions, :descr)
+            ON CONFLICT (item_id) DO UPDATE SET
+                domain = EXCLUDED.domain, title = EXCLUDED.title, creator_id = EXCLUDED.creator_id,
+                creator_name = EXCLUDED.creator_name, genres = EXCLUDED.genres,
+                mood_tags = EXCLUDED.mood_tags, duration_ms = EXCLUDED.duration_ms,
+                release_date = EXCLUDED.release_date, explicit = EXCLUDED.explicit,
+                available_regions = EXCLUDED.available_regions, description = EXCLUDED.description,
+                deleted = FALSE, seq = items.seq + 1, updated_at = now()
+            WHERE items.deleted
+               OR (items.domain, items.title, items.creator_id, items.creator_name, items.genres,
+                   items.mood_tags, items.duration_ms, items.release_date, items.explicit,
+                   items.available_regions, items.description)
+                  IS DISTINCT FROM
+                  (EXCLUDED.domain, EXCLUDED.title, EXCLUDED.creator_id, EXCLUDED.creator_name,
+                   EXCLUDED.genres, EXCLUDED.mood_tags, EXCLUDED.duration_ms, EXCLUDED.release_date,
+                   EXCLUDED.explicit, EXCLUDED.available_regions, EXCLUDED.description)
+            RETURNING *
+            """)
+        .param("id", i.itemId())
+        .param("domain", i.domain())
+        .param("title", i.title())
+        .param("cid", i.artistId())
+        .param("cname", i.artistName())
+        .param("genres", i.genres().toArray(String[]::new))
+        .param("moods", i.moods().toArray(String[]::new))
+        .param("dur", i.durationMs())
+        .param("rel", i.releaseDate())
+        .param("explicit", i.explicit())
+        .param("regions", i.availableRegions().toArray(String[]::new))
+        .param("descr", i.description())
+        .query(CatalogRepository::map)
+        .optional();
+  }
+
+  public Optional<CatalogItemDto> find(String itemId) {
+    return jdbc.sql("SELECT * FROM items WHERE item_id = :id AND NOT deleted")
+        .param("id", itemId)
+        .query(CatalogRepository::map)
+        .optional();
+  }
+
+  /** Soft delete (keeps the row so the tombstone can be re-published). Returns the new seq. */
+  public Optional<Long> markDeleted(String itemId) {
+    return jdbc.sql(
+            "UPDATE items SET deleted = TRUE, seq = seq + 1, updated_at = now() "
+                + "WHERE item_id = :id AND NOT deleted RETURNING seq")
+        .param("id", itemId)
+        .query(Long.class)
+        .optional();
+  }
+
+  public void markPublished(String itemId, long seq) {
+    jdbc.sql("UPDATE items SET published_seq = GREATEST(published_seq, :seq) WHERE item_id = :id")
+        .param("id", itemId)
+        .param("seq", seq)
+        .update();
+  }
+
+  public record Unpublished(CatalogItemDto item, boolean deleted) {}
+
+  public List<Unpublished> unpublished(int limit) {
+    return jdbc.sql(
+            "SELECT * FROM items WHERE published_seq < seq ORDER BY updated_at LIMIT :limit")
+        .param("limit", limit)
+        .query((rs, n) -> new Unpublished(map(rs, n), rs.getBoolean("deleted")))
+        .list();
+  }
+
+  static CatalogItemDto map(ResultSet rs, int rowNum) throws SQLException {
+    var rel = rs.getDate("release_date");
+    long dur = rs.getLong("duration_ms");
+    boolean durNull = rs.wasNull();
+    return new CatalogItemDto(
+        rs.getString("item_id"),
+        rs.getString("domain"),
+        rs.getString("title"),
+        rs.getString("creator_id"),
+        rs.getString("creator_name"),
+        strings(rs.getArray("genres")),
+        strings(rs.getArray("mood_tags")),
+        durNull ? null : dur,
+        rel == null ? null : rel.toLocalDate(),
+        rs.getBoolean("explicit"),
+        strings(rs.getArray("available_regions")),
+        rs.getString("description"),
+        rs.getLong("seq"),
+        ts(rs.getTimestamp("created_at")),
+        ts(rs.getTimestamp("updated_at")));
+  }
+
+  private static java.time.Instant ts(Timestamp t) {
+    return t == null ? null : t.toInstant();
+  }
+
+  private static List<String> strings(Array a) throws SQLException {
+    return a == null ? List.of() : Arrays.asList((String[]) a.getArray());
+  }
+}

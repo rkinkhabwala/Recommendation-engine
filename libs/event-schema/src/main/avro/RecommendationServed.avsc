@@ -1,0 +1,27 @@
+{
+  "type": "record",
+  "name": "RecommendationServed",
+  "namespace": "com.recsys.events.v1",
+  "doc": "One served recommendation list. Topic recs.served.v1, keyed by user_id.",
+  "fields": [
+    {"name": "recommendation_id", "type": "string"},
+    {"name": "user_id", "type": "string"},
+    {"name": "domain", "type": "com.recsys.events.v1.Domain"},
+    {"name": "surface", "type": "string"},
+    {"name": "variant_id", "type": "string"},
+    {"name": "ranker_version", "type": "string"},
+    {"name": "index_version", "type": "string"},
+    {"name": "fallback_level", "type": "string"},
+    {"name": "served_ts", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "items", "type": {"type": "array", "items": {"type": "record", "name": "ServedItem", "fields": [
+      {"name": "item_id", "type": "string"},
+      {"name": "position", "type": "int"},
+      {"name": "score", "type": "double"},
+      {"name": "sources", "type": {"type": "array", "items": "string"}, "default": []},
+      {"name": "reason_code", "type": "string"},
+      {"name": "explore", "type": "boolean", "default": false},
+      {"name": "propensity", "type": ["null", "double"], "default": null},
+      {"name": "features", "type": ["null", {"type": "map", "values": "float"}], "default": null, "doc": "Sampled ranking features (training/serving skew)"}
+    ]}}}
+  ]
+}

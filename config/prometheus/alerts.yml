@@ -1,0 +1,39 @@
+groups:
+  - name: recsys-slo
+    rules:
+      - alert: ServingP99Above100ms
+        expr: histogram_quantile(0.99, sum by (le) (rate(recs_api_request_seconds_bucket[5m]))) > 0.1
+        for: 5m
+        labels: {severity: page}
+        annotations: {summary: "Recommendations p99 latency above 100 ms"}
+      - alert: ServingP50Above30ms
+        expr: histogram_quantile(0.50, sum by (le) (rate(recs_api_request_seconds_bucket[5m]))) > 0.03
+        for: 10m
+        labels: {severity: ticket}
+      - alert: FeatureFreshnessP95Above5s
+        expr: histogram_quantile(0.95, sum by (le) (rate(recs_feature_freshness_seconds_bucket{feature="user_short_term"}[5m]))) > 5
+        for: 5m
+        labels: {severity: page}
+        annotations: {summary: "User actions take more than 5 s to reach Redis"}
+      - alert: FallbackRateAbove2Percent
+        expr: sum(rate(recs_api_fallback_total{level!="NONE"}[5m])) / sum(rate(recs_api_fallback_total[5m])) > 0.02
+        for: 10m
+        labels: {severity: ticket}
+      - alert: StreamConsumerLagGrowing
+        expr: max(kafka_consumer_fetch_manager_records_lag_max{job="recsys"}) > 10000
+        for: 10m
+        labels: {severity: ticket}
+  - name: recsys-openai-budget
+    rules:
+      - alert: OpenAiBudget50Percent
+        expr: max(recs_openai_budget_used_ratio) >= 0.5
+        labels: {severity: info}
+        annotations: {summary: "OpenAI spend reached 50% of the monthly budget"}
+      - alert: OpenAiBudget80Percent
+        expr: max(recs_openai_budget_used_ratio) >= 0.8
+        labels: {severity: ticket}
+        annotations: {summary: "OpenAI spend reached 80% of the monthly budget"}
+      - alert: OpenAiCircuitOpen
+        expr: sum(rate(recs_openai_request_seconds_count{outcome="circuit_open"}[5m])) > 0
+        for: 5m
+        labels: {severity: ticket}

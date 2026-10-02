@@ -1,0 +1,94 @@
+server:
+  port: 8083
+spring:
+  application:
+    name: stream-processor
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    consumer:
+      # feature-writer
+      group-id: feature-writer
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.ByteArrayDeserializer
+      isolation-level: read_committed
+      max-poll-records: 500
+    listener:
+      type: batch
+      concurrency: 3
+recs:
+  redis:
+    uri: ${REDIS_URI:redis://localhost:6379}
+  stream:
+    application-id: recs-stream-processor
+    state-dir: ${STREAMS_STATE_DIR:/tmp/recs-streams}
+    schema-registry-url: ${SCHEMA_REGISTRY_URL:http://localhost:8085}
+    replication-factor: ${KAFKA_REPLICATION_FACTOR:1}
+    standby-replicas: ${STREAMS_STANDBY_REPLICAS:0}
+    commit-interval: 100ms
+    max-compaction-lag: 7d
+    topology:
+      # Must match the embedding-worker's index; vectors from other spaces are ignored.
+      index-version: ${RECS_INDEX_VERSION:items_mock_512_v1}
+      dedupe-window: 24h
+      max-lateness: 24h
+      short-term-half-life: 2h
+      long-term-half-life: 30d
+      affinity-half-life: 6h
+      item-stats-half-life: 24h
+      neighbor-half-life: 7d
+      recently-played-window: 2h
+      long-term-emit-interval: ${RECS_LONG_TERM_EMIT_INTERVAL:1h}
+      item-emit-interval: 30s
+      trending-window: 15m
+      trending-grace: 10m
+      trending-emit-interval: 30s
+      attribution-window: 30m
+      user-key-ttl: 30d
+      item-key-ttl: 30d
+      negative-cap-ratio: 0.3
+      co-engagement-min-weight: 0.4
+      max-co-emits-per-session: 200
+      neighbor-top-k: 50
+      neighbor-min-support: 2.0
+      trending-top-n: 500
+      affinity-max-entries: 50
+    # docs/architecture.md section 5. TODO(phase-2): per-domain weights for books, videos, posts.
+    song-signals:
+      event-weights:
+        SAVE: 2.0
+        LIKE: 1.5
+        SHARE: 1.5
+        REPLAY: 1.2
+        COMMENT: 1.0
+        SEARCH_RESULT_CLICK: 0.3
+        DISLIKE: -2.0
+        NOT_INTERESTED: -3.0
+      complete-threshold: 0.9
+      complete-weight: 1.0
+      listened-seconds: 30
+      listened-weight: 0.4
+      early-skip-seconds: 10
+      early-skip-weight: -0.8
+      mid-skip-seconds: 30
+      mid-skip-weight: -0.3
+      late-skip-ratio: 0.5
+      late-skip-weight: 0.2
+      browsing-skip-factor: 0.5
+      seek-forward-ratio: 0.3
+      seek-forward-weight: -0.1
+      follow-artist-weight: 1.0
+      rating-weight-per-star: 0.75
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+logging:
+  structured:
+    format:
+      console: ${LOG_FORMAT:ecs}

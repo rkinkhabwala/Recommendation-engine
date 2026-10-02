@@ -1,0 +1,69 @@
+server:
+  port: 8084
+spring:
+  application:
+    name: embedding-worker
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
+      acks: all
+      compression-type: zstd
+      properties:
+        enable.idempotence: true
+        schema.registry.url: ${SCHEMA_REGISTRY_URL:http://localhost:8085}
+        auto.register.schemas: ${SCHEMA_AUTO_REGISTER:true}
+    consumer:
+      group-id: embedding-worker
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
+      max-poll-records: 200
+      properties:
+        schema.registry.url: ${SCHEMA_REGISTRY_URL:http://localhost:8085}
+        specific.avro.reader: true
+        max.poll.interval.ms: 600000
+    listener:
+      type: batch
+recs:
+  embedding:
+    # Collection name encodes model + dims; must match recs.openai.* below.
+    index-version: ${RECS_INDEX_VERSION:items_mock_512_v1}
+    alias: items_current
+    template-version: song-v1
+    embed-batch-size: 100
+    qdrant-host: ${QDRANT_HOST:localhost}
+    qdrant-port: ${QDRANT_GRPC_PORT:6334}
+    qdrant-timeout: 10s
+    user-key-ttl: 30d
+  openai:
+    # mock (default): deterministic local embedder, no API key needed. openai: real API.
+    mode: ${RECS_OPENAI_MODE:mock}
+    base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
+    api-key: ${OPENAI_API_KEY:}
+    embedding-model: ${RECS_EMBEDDING_MODEL:text-embedding-3-small}
+    dimensions: ${RECS_EMBEDDING_DIMS:512}
+    timeout: 10s
+    max-attempts: 5
+    initial-backoff: 500ms
+    requests-per-minute: 500
+    # Dev budget; Prometheus alerts at 50% and 80% of recs_openai_budget_used_ratio.
+    monthly-budget-usd: ${RECS_OPENAI_MONTHLY_BUDGET_USD:50}
+    price-per-million-tokens:
+      # Verify against current OpenAI pricing; used only for cost metrics and the budget guard.
+      text-embedding-3-small: 0.02
+      text-embedding-3-large: 0.13
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+logging:
+  structured:
+    format:
+      console: ${LOG_FORMAT:ecs}

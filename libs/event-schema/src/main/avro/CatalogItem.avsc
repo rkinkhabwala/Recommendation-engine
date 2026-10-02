@@ -1,0 +1,23 @@
+{
+  "type": "record",
+  "name": "CatalogItem",
+  "namespace": "com.recsys.events.v1",
+  "doc": "Catalog item snapshot. Topic catalog.items.v1 (compacted), keyed by item_id. Null value = deleted.",
+  "fields": [
+    {"name": "item_id", "type": "string"},
+    {"name": "domain", "type": "com.recsys.events.v1.Domain"},
+    {"name": "title", "type": "string"},
+    {"name": "creator_id", "type": "string", "doc": "artist / author / channel"},
+    {"name": "creator_name", "type": "string"},
+    {"name": "genres", "type": {"type": "array", "items": "string"}, "default": []},
+    {"name": "mood_tags", "type": {"type": "array", "items": "string"}, "default": []},
+    {"name": "duration_ms", "type": ["null", "long"], "default": null},
+    {"name": "release_date", "type": ["null", {"type": "int", "logicalType": "date"}], "default": null},
+    {"name": "explicit", "type": "boolean", "default": false},
+    {"name": "available_regions", "type": {"type": "array", "items": "string"}, "default": [], "doc": "Empty = everywhere"},
+    {"name": "description", "type": ["null", "string"], "default": null},
+    {"name": "created_at", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "updated_at", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "seq", "type": "long", "doc": "Monotonic per item; consumers ignore lower seq"}
+  ]
+}

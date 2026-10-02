@@ -1,0 +1,40 @@
+// k6 load test for GET /v1/recommendations with the serving SLOs as thresholds.
+//   docker run --rm -i -e BASE_URL=http://host.docker.internal:8080 -e RATE=200 grafana/k6 run - < load-tests/recommendations.js
+// Users sim_u000001..sim_u005000 exist after `simulator simulate`; others exercise cold start.
+import http from 'k6/http';
+import { check } from 'k6';
+
+const BASE = __ENV.BASE_URL || 'http://localhost:8080';
+const KEY = __ENV.API_KEY || 'dev-key';
+const COUNTRIES = ['US', 'GB', 'DE', 'IN', 'BR', 'KR'];
+
+export const options = {
+  scenarios: {
+    recommendations: {
+      executor: 'constant-arrival-rate',
+      rate: Number(__ENV.RATE || 200),
+      timeUnit: '1s',
+      duration: __ENV.DURATION || '2m',
+      preAllocatedVUs: 100,
+      maxVUs: 1000,
+    },
+  },
+  thresholds: {
+    'http_req_duration{name:recommendations}': ['p(50)<30', 'p(99)<100'],
+    http_req_failed: ['rate<0.01'],
+    checks: ['rate>0.99'],
+  },
+};
+
+export default function () {
+  const user = `sim_u${String(1 + Math.floor(Math.random() * 6000)).padStart(6, '0')}`;
+  const country = COUNTRIES[Math.floor(Math.random() * COUNTRIES.length)];
+  const res = http.get(
+    `${BASE}/v1/recommendations?userId=${user}&domain=song&limit=20&country=${country}`,
+    { headers: { 'X-Api-Key': KEY }, tags: { name: 'recommendations' } },
+  );
+  check(res, {
+    'status 200': (r) => r.status === 200,
+    'has items': (r) => r.json('items').length > 0,
+  });
+}

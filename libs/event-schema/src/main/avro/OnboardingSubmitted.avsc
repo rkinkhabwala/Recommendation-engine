@@ -1,0 +1,15 @@
+{
+  "type": "record",
+  "name": "OnboardingSubmitted",
+  "namespace": "com.recsys.events.v1",
+  "doc": "Cold-start onboarding answers. Topic users.onboarding.v1 (3 day retention), keyed by user_id.",
+  "fields": [
+    {"name": "user_id", "type": "string"},
+    {"name": "domain", "type": "com.recsys.events.v1.Domain"},
+    {"name": "item_ids", "type": {"type": "array", "items": "string"}, "default": []},
+    {"name": "artist_ids", "type": {"type": "array", "items": "string"}, "default": []},
+    {"name": "genres", "type": {"type": "array", "items": "string"}, "default": []},
+    {"name": "free_text", "type": ["null", "string"], "default": null, "doc": "Scrubbed of PII before any OpenAI call"},
+    {"name": "submitted_ts", "type": {"type": "long", "logicalType": "timestamp-millis"}}
+  ]
+}

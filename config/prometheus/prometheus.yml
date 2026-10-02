@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+rule_files:
+  - /etc/prometheus/alerts.yml
+scrape_configs:
+  - job_name: recsys
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets:
+          - recommendation-api:8080
+          - ingestion-api:8081
+          - catalog-service:8082
+          - stream-processor:8083
+          - embedding-worker:8084

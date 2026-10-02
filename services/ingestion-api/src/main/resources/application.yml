@@ -1,0 +1,51 @@
+server:
+  port: 8081
+spring:
+  application:
+    name: ingestion-api
+  threads:
+    virtual:
+      enabled: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    template:
+      observation-enabled: true
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
+      acks: all
+      compression-type: zstd
+      properties:
+        enable.idempotence: true
+        linger.ms: 5
+        delivery.timeout.ms: 10000
+        request.timeout.ms: 5000
+        schema.registry.url: ${SCHEMA_REGISTRY_URL:http://localhost:8085}
+        # Contract schemas are registered by CI/ops in prod; auto-register for local dev.
+        auto.register.schemas: ${SCHEMA_AUTO_REGISTER:true}
+recs:
+  security:
+    api-keys: ${RECS_API_KEYS:dev-key}
+  ingestion:
+    max-batch-size: 500
+    publish-timeout: 5s
+    max-clock-skew: 60s
+    user-events-per-second: 20
+    user-burst: 200
+    max-free-text-chars: 500
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING:0.1}
+logging:
+  structured:
+    format:
+      console: ${LOG_FORMAT:ecs}

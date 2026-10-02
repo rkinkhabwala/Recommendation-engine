@@ -1,0 +1,42 @@
+server:
+  port: 8082
+spring:
+  application:
+    name: catalog-service
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: ${POSTGRES_URL:jdbc:postgresql://localhost:5432/recsys}
+    username: ${POSTGRES_USER:recsys}
+    password: ${POSTGRES_PASSWORD:recsys}
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
+      acks: all
+      compression-type: zstd
+      properties:
+        enable.idempotence: true
+        linger.ms: 10
+        schema.registry.url: ${SCHEMA_REGISTRY_URL:http://localhost:8085}
+        auto.register.schemas: ${SCHEMA_AUTO_REGISTER:true}
+recs:
+  security:
+    api-keys: ${RECS_API_KEYS:dev-key}
+  catalog:
+    reconcile-interval: 30s
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+logging:
+  structured:
+    format:
+      console: ${LOG_FORMAT:ecs}

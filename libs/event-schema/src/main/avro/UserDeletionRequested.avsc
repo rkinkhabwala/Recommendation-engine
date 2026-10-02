@@ -1,0 +1,11 @@
+{
+  "type": "record",
+  "name": "UserDeletionRequested",
+  "namespace": "com.recsys.events.v1",
+  "doc": "Right-to-erasure request. Topic users.deletion.v1, keyed by user_id.",
+  "fields": [
+    {"name": "request_id", "type": "string"},
+    {"name": "user_id", "type": "string"},
+    {"name": "requested_ts", "type": {"type": "long", "logicalType": "timestamp-millis"}}
+  ]
+}

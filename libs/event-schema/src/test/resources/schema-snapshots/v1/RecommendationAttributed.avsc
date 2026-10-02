@@ -1,0 +1,18 @@
+{
+  "type": "record",
+  "name": "RecommendationAttributed",
+  "namespace": "com.recsys.events.v1",
+  "doc": "A served item joined with a later engagement. Topic recs.attributed.v1, keyed by recommendation_id.",
+  "fields": [
+    {"name": "recommendation_id", "type": "string"},
+    {"name": "item_id", "type": "string"},
+    {"name": "position", "type": "int"},
+    {"name": "user_id", "type": "string"},
+    {"name": "variant_id", "type": "string"},
+    {"name": "explore", "type": "boolean", "default": false},
+    {"name": "outcome", "type": {"type": "enum", "name": "Outcome", "default": "OTHER",
+      "symbols": ["OTHER", "PLAYED", "COMPLETED", "SKIPPED_EARLY", "LIKED", "SAVED", "DISLIKED"]}},
+    {"name": "served_ts", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "outcome_ts", "type": {"type": "long", "logicalType": "timestamp-millis"}}
+  ]
+}

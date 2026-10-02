@@ -1,0 +1,101 @@
+server:
+  port: 8080
+  tomcat:
+    threads:
+      max: 400
+spring:
+  application:
+    name: recommendation-api
+  threads:
+    virtual:
+      enabled: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    producer:
+      # Served-recommendation log: off the request thread, lossy under backpressure by design.
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
+      acks: 1
+      compression-type: zstd
+      properties:
+        linger.ms: 20
+        max.block.ms: 1000
+        schema.registry.url: ${SCHEMA_REGISTRY_URL:http://localhost:8085}
+        auto.register.schemas: ${SCHEMA_AUTO_REGISTER:true}
+recs:
+  security:
+    api-keys: ${RECS_API_KEYS:dev-key}
+  redis:
+    uri: ${REDIS_URI:redis://localhost:6379}
+  qdrant:
+    host: ${QDRANT_HOST:localhost}
+    grpc-port: ${QDRANT_GRPC_PORT:6334}
+  api:
+    index-alias: items_current
+    index-version: ${RECS_INDEX_VERSION:items_mock_512_v1}
+    enabled-domains: [song] # TODO(phase-2): book, video, post
+    deadline: 80ms
+    budgets:
+      user-features: 10ms
+      generators: 40ms
+      hydration: 12ms
+      rescore: 15ms
+    candidates:
+      ann: 120
+      fresh: 30
+      fresh-window: 7d
+      cf-seeds: 5
+      cf-per-seed: 30
+      next-item: 100
+      trending: 50
+      short-term-blend: 0.7
+    rerank:
+      recently-played-window: 2h
+      artist-window: 3
+      max-per-artist-per10: 2
+      genre-diversity-lambda: 0.8
+      freshness-boost-window: 14d
+      freshness-boost: 0.1
+      familiarity-cap: 0.3
+      exploration-epsilon: 0.08
+      exploration-min-limit: 8
+      low-impression-threshold: 20
+    default-limit: 20
+    max-limit: 50
+    feature-log-sample-rate: 0.05
+    popular-refresh: 60s
+    experiments:
+      salt: recs-2026-10
+      variants:
+        - id: control
+          from: 0
+          to: 1000
+          weights:
+            semantic: 0.45
+            cf: 0.15
+            next-item: 0.10
+            affinity: 0.10
+            popularity: 0.08
+            completion: 0.07
+            freshness: 0.05
+            recent-negative-penalty: 0.15
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING:0.1}
+logging:
+  level:
+    # The Qdrant client logs every cancelled call at ERROR; our deadline cancels slow calls by
+    # design and recs_api_generator_total{result=timeout|error} already counts them.
+    io.qdrant.client.QdrantClient: "OFF"
+  structured:
+    format:
+      console: ${LOG_FORMAT:ecs}
