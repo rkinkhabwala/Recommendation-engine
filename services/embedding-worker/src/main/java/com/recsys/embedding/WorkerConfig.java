@@ -81,7 +81,7 @@ class WorkerConfig {
           public void publish(List<ItemEmbedding> embeddings) {
             var futures =
                 embeddings.stream()
-                    .map(e -> avroTemplate.send(Topics.CATALOG_EMBEDDINGS, e.getItemId(), e))
+                    .map(e -> avroTemplate.send(props.embeddingsTopic(), e.getItemId(), e))
                     .toList();
             for (var f : futures) {
               try {
@@ -94,7 +94,7 @@ class WorkerConfig {
 
           @Override
           public void tombstone(String itemId) {
-            avroTemplate.send(Topics.CATALOG_EMBEDDINGS, itemId, null).join();
+            avroTemplate.send(props.embeddingsTopic(), itemId, null).join();
           }
 
           @Override

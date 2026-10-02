@@ -1,0 +1,1 @@
+{"version": "vtest", "features": ["semantic", "cf", "next", "affinity", "trending", "ctr", "completion", "freshness", "penalty", "position"]}

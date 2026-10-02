@@ -19,7 +19,12 @@ public final class ScoredCandidate {
   public ItemMeta meta;
   public ItemStats stats;
   public double score;
+
+  /** Ranking features in {@link com.recsys.api.ranking.FeatureExtractor#FEATURES} order. */
+  public double[] featureVector;
+
   public Map<String, Float> features = Map.of();
+  public String explanation;
   public boolean explore;
   public Double propensity;
 
@@ -27,8 +32,12 @@ public final class ScoredCandidate {
     this.itemId = itemId;
   }
 
+  /** Reason and seed proposed by each source (for contribution-based reason attribution). */
+  public final Map<String, Candidate> bySource = new LinkedHashMap<>();
+
   public void absorb(Candidate c) {
     sourceScores.merge(c.source(), c.score(), Math::max);
+    bySource.merge(c.source(), c, (a, b) -> b.score() > a.score() ? b : a);
     if (c.annScore() != null && (semantic == null || c.annScore() > semantic)) {
       semantic = c.annScore();
     }

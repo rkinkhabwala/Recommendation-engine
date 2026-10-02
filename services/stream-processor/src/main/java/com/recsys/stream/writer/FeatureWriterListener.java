@@ -88,18 +88,26 @@ public class FeatureWriterListener extends AbstractConsumerSeekAware {
         .register(registry);
   }
 
-  static String feature(String key) {
-    if (key.endsWith(":st")) {
-      return "user_short_term";
+  public static String feature(String key) {
+    if (RedisKeys.userIdOf(key) != null) {
+      // u:{id}:st:<domain>, u:{id}:lt:<domain>, u:{id}:seed:<domain>, u:{id}:x
+      String rest = key.substring(key.indexOf("}:") + 2);
+      String type = rest.contains(":") ? rest.substring(0, rest.indexOf(':')) : rest;
+      return switch (type) {
+        case "st" -> "user_short_term";
+        case "lt" -> "user_long_term";
+        case "seed" -> "user_seed";
+        case "x" -> "user_cross_domain";
+        default -> "user_other";
+      };
     }
-    if (key.endsWith(":lt")) {
-      return "user_long_term";
+    if (key.startsWith("trend:")) {
+      return "trending";
     }
-    if (key.endsWith(":seed")) {
-      return "user_seed";
+    if (key.startsWith("expl:")) {
+      return "explanation";
     }
-    int i = key.lastIndexOf(':');
-    return key.startsWith("trend:") ? "trending" : "item_" + key.substring(i + 1);
+    return "item_" + key.substring(key.lastIndexOf(':') + 1);
   }
 
   /** Seeks every assigned partition back to the beginning (Redis rebuild). */

@@ -27,6 +27,12 @@ class CatalogAvroTest {
             false,
             List.of("US"),
             null,
+            null,
+            List.of("night"),
+            List.of(),
+            "calm",
+            null,
+            1,
             1L,
             Instant.now(),
             Instant.now());
@@ -42,6 +48,8 @@ class CatalogAvroTest {
         CatalogItem back = (CatalogItem) de.deserialize("catalog.items.v1", bytes);
         assertThat(back.getReleaseDate()).isEqualTo(LocalDate.of(2026, 9, 1));
         assertThat(back.getAvailableRegions()).containsExactly("US");
+        assertThat(back.getThemes()).containsExactly("night");
+        assertThat(back.getEnrichmentVersion()).isEqualTo(1);
       }
     }
   }

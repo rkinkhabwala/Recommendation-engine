@@ -33,13 +33,14 @@ recs:
   api:
     index-alias: items_current
     index-version: ${RECS_INDEX_VERSION:items_mock_512_v1}
-    enabled-domains: [song] # TODO(phase-2): book, video, post
+    enabled-domains: [song, book, video, post]
     deadline: 80ms
     budgets:
       user-features: 10ms
       generators: 40ms
       hydration: 12ms
       rescore: 15ms
+      explanations: 5ms
     candidates:
       ann: 120
       fresh: 30
@@ -48,37 +49,98 @@ recs:
       cf-per-seed: 30
       next-item: 100
       trending: 50
-      short-term-blend: 0.7
+      # Query vector = short·0.6 + long·0.25 + cross-domain·0.15 (renormalized). Users new to a
+      # domain fall back to the cross-domain vector (reason CROSS_DOMAIN).
+      short-weight: 0.6
+      long-weight: 0.25
+      cross-weight: 0.15
     rerank:
-      recently-played-window: 2h
-      artist-window: 3
-      max-per-artist-per10: 2
-      genre-diversity-lambda: 0.8
-      freshness-boost-window: 14d
-      freshness-boost: 0.1
-      familiarity-cap: 0.3
-      exploration-epsilon: 0.08
-      exploration-min-limit: 8
-      low-impression-threshold: 20
+      default: &rerank-default
+        consumed-window: 30d
+        artist-window: 2
+        max-per-artist-per10: 3
+        genre-diversity-lambda: 0.8
+        freshness-boost-window: 14d
+        freshness-boost: 0.1
+        familiarity-cap: 0 # liked items are not shown again
+        exploration-epsilon: 0.08
+        exploration-min-limit: 8
+        low-impression-threshold: 20
+        exploration-strategy: epsilon
+      song:
+        <<: *rerank-default
+        consumed-window: 2h # songs are replayable
+        artist-window: 3
+        max-per-artist-per10: 2
+        familiarity-cap: 0.3
+      video:
+        <<: *rerank-default
+        consumed-window: 30d
+      book:
+        <<: *rerank-default
+        consumed-window: 365d
+        max-per-artist-per10: 2 # authors
+      post:
+        <<: *rerank-default
+        consumed-window: 30d
+        freshness-boost-window: 2d
+        freshness-boost: 0.3 # feeds favour recency
     default-limit: 20
     max-limit: 50
-    feature-log-sample-rate: 0.05
+    # Share of requests whose ranking features are logged (training data for the learned ranker).
+    feature-log-sample-rate: ${RECS_FEATURE_LOG_SAMPLE_RATE:0.05}
     popular-refresh: 60s
+    ranking:
+      model-dir: ${RECS_MODEL_DIR:/models}
+      reload-interval: 30s
+    # Deterministic bucketing per domain (murmur2(salt:user) mod 1000). Each variant chooses its
+    # ranker (heuristic | lightgbm; lightgbm falls back to heuristic until a model is promoted),
+    # heuristic weights and optionally an exploration strategy.
     experiments:
-      salt: recs-2026-10
-      variants:
-        - id: control
-          from: 0
-          to: 1000
-          weights:
-            semantic: 0.45
-            cf: 0.15
-            next-item: 0.10
-            affinity: 0.10
-            popularity: 0.08
-            completion: 0.07
-            freshness: 0.05
-            recent-negative-penalty: 0.15
+      default:
+        salt: recs-2026-10
+        variants:
+          - &control
+            id: control
+            from: 0
+            to: 1000
+            ranker: heuristic
+            weights: &weights
+              semantic: 0.45
+              cf: 0.15
+              next-item: 0.10
+              affinity: 0.10
+              popularity: 0.08
+              completion: 0.07
+              freshness: 0.05
+              recent-negative-penalty: 0.15
+      song:
+        salt: song-ranker-2026-10
+        variants:
+          - id: control
+            from: 0
+            to: 500
+            ranker: heuristic
+            weights: *weights
+          - id: lgbm_thompson
+            from: 500
+            to: 1000
+            ranker: lightgbm:candidate
+            weights: *weights
+            exploration: thompson
+      video:
+        salt: video-ranker-2026-10
+        variants:
+          - id: control
+            from: 0
+            to: 500
+            ranker: heuristic
+            weights: *weights
+          - id: lgbm
+            from: 500
+            to: 1000
+            ranker: lightgbm:candidate
+            weights: *weights
 management:
   endpoints:
     web:

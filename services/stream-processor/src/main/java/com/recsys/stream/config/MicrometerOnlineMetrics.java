@@ -4,8 +4,12 @@ import com.recsys.events.v1.RecommendationAttributed;
 import com.recsys.events.v1.RecommendationServed;
 import com.recsys.stream.topology.OnlineMetrics;
 import io.micrometer.core.instrument.MeterRegistry;
+import java.util.Locale;
 
-/** CTR / completion / skip per variant = outcomes_total / served_items_total in Prometheus. */
+/**
+ * Online evaluation: CTR / completion / skip per domain and variant = outcomes_total /
+ * served_items_total (or / IMPRESSED outcomes) in Prometheus.
+ */
 final class MicrometerOnlineMetrics implements OnlineMetrics {
   private final MeterRegistry registry;
 
@@ -18,6 +22,8 @@ final class MicrometerOnlineMetrics implements OnlineMetrics {
     registry
         .counter(
             "recs_online_served_items_total",
+            "domain",
+            served.getDomain().name().toLowerCase(Locale.ROOT),
             "variant",
             served.getVariantId(),
             "fallback",
@@ -30,6 +36,8 @@ final class MicrometerOnlineMetrics implements OnlineMetrics {
     registry
         .counter(
             "recs_online_outcomes_total",
+            "domain",
+            a.getDomain().name().toLowerCase(Locale.ROOT),
             "variant",
             a.getVariantId(),
             "outcome",

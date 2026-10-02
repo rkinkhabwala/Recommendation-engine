@@ -7,6 +7,9 @@ import { check } from 'k6';
 const BASE = __ENV.BASE_URL || 'http://localhost:8080';
 const KEY = __ENV.API_KEY || 'dev-key';
 const COUNTRIES = ['US', 'GB', 'DE', 'IN', 'BR', 'KR'];
+// Weighted domain mix (song-heavy, like the simulator). Override with DOMAINS=song,book.
+const DOMAINS = (__ENV.DOMAINS || 'song,song,song,video,video,post,book').split(',');
+const CONTEXT = { song: 'next_track', video: 'related', post: 'feed', book: 'home' };
 
 export const options = {
   scenarios: {
@@ -29,8 +32,9 @@ export const options = {
 export default function () {
   const user = `sim_u${String(1 + Math.floor(Math.random() * 6000)).padStart(6, '0')}`;
   const country = COUNTRIES[Math.floor(Math.random() * COUNTRIES.length)];
+  const domain = DOMAINS[Math.floor(Math.random() * DOMAINS.length)];
   const res = http.get(
-    `${BASE}/v1/recommendations?userId=${user}&domain=song&limit=20&country=${country}`,
+    `${BASE}/v1/recommendations?userId=${user}&domain=${domain}&context=${CONTEXT[domain]}&limit=20&country=${country}`,
     { headers: { 'X-Api-Key': KEY }, tags: { name: 'recommendations' } },
   );
   check(res, {

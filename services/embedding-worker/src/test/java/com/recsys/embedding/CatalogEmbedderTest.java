@@ -34,7 +34,15 @@ class CatalogEmbedderTest {
   final AtomicInteger apiCalls = new AtomicInteger();
   final WorkerProperties props =
       new WorkerProperties(
-          INDEX, "items_current", "song-v1", 2, "x", 0, Duration.ofSeconds(1), Duration.ofDays(30));
+          INDEX,
+          "items_current",
+          "song-v1",
+          2,
+          "x",
+          0,
+          Duration.ofSeconds(1),
+          Duration.ofDays(30),
+          null);
 
   final CatalogEmbedder.EmbeddingSink sink =
       new CatalogEmbedder.EmbeddingSink() {
@@ -82,7 +90,7 @@ class CatalogEmbedderTest {
         client(outage), index, sink, props, new SimpleMeterRegistry(), Clock.systemUTC());
   }
 
-  static CatalogItem song(String id, String title, List<String> regions) {
+  public static CatalogItem song(String id, String title, List<String> regions) {
     return CatalogItem.newBuilder()
         .setItemId(id)
         .setDomain(Domain.SONG)

@@ -2,12 +2,13 @@ package com.recsys.stream.signals;
 
 import com.recsys.stream.model.EventView;
 
-/** Maps an event to a signed engagement weight and to an item-statistics class. */
+/** Maps an event to a signed engagement weight and to an item-statistics class, for one domain. */
 public final class SignalWeigher {
 
   /** Item-statistics classification of an event (independent of user state). */
   public enum Kind {
     IMPRESSION,
+    /** The user started consuming: play, open, or an engaged view. */
     START,
     COMPLETE,
     EARLY_SKIP,
@@ -39,10 +40,18 @@ public final class SignalWeigher {
             : null;
     return switch (type) {
       case "PLAY_END" -> {
-        if (completion != null && completion >= w.completeThreshold()) {
+        if (completion != null
+            && w.completeThreshold() > 0
+            && completion >= w.completeThreshold()) {
           yield w.completeWeight();
         }
-        yield listened != null && listened >= w.listenedSeconds() ? w.listenedWeight() : 0;
+        if (completion != null && w.abandonRatio() > 0 && completion < w.abandonRatio()) {
+          yield w.abandonWeight();
+        }
+        boolean meaningful =
+            (listened != null && w.listenedSeconds() > 0 && listened >= w.listenedSeconds())
+                || (completion != null && w.listenedRatio() > 0 && completion >= w.listenedRatio());
+        yield meaningful ? w.listenedWeight() : 0;
       }
       case "SKIP" -> {
         if (listened == null) {
@@ -66,6 +75,17 @@ public final class SignalWeigher {
         }
         yield 0;
       }
+      case "DWELL" -> {
+        if (e.value() == null) {
+          yield 0;
+        }
+        if (w.dwellSeconds() > 0 && e.value() >= w.dwellSeconds()) {
+          yield w.dwellWeight();
+        }
+        yield w.shortDwellSeconds() > 0 && e.value() < w.shortDwellSeconds()
+            ? w.shortDwellWeight()
+            : 0;
+      }
       case "RATE" -> e.value() == null ? 0 : (e.value() - 3) * w.ratingWeightPerStar();
       default -> w.eventWeights().getOrDefault(type, 0.0);
     };
@@ -76,10 +96,19 @@ public final class SignalWeigher {
     return "SKIP".equals(e.eventType()) && listened != null && listened < w.earlySkipSeconds();
   }
 
+  /** An engaged dwell (posts, book pages) counts as consumption. */
+  public boolean isEngagedDwell(EventView e) {
+    return "DWELL".equals(e.eventType())
+        && e.value() != null
+        && w.dwellSeconds() > 0
+        && e.value() >= w.dwellSeconds();
+  }
+
   public Kind classify(EventView e, Long durationMs) {
     return switch (e.eventType()) {
       case "IMPRESSION" -> Kind.IMPRESSION;
-      case "PLAY_START" -> Kind.START;
+      case "PLAY_START", "CLICK" -> Kind.START;
+      case "DWELL" -> isEngagedDwell(e) ? Kind.START : Kind.OTHER;
       case "SKIP" -> isEarlySkip(e) ? Kind.EARLY_SKIP : Kind.SKIP;
       case "PLAY_END" -> {
         Double listened = e.listenedSeconds();
@@ -87,6 +116,7 @@ public final class SignalWeigher {
             listened != null
                 && durationMs != null
                 && durationMs > 0
+                && w.completeThreshold() > 0
                 && listened * 1000.0 / durationMs >= w.completeThreshold();
         yield complete ? Kind.COMPLETE : Kind.END;
       }

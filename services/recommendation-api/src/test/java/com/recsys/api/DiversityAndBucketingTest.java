@@ -53,16 +53,16 @@ class DiversityAndBucketingTest {
         RecContext.of(
             new RecRequest("u", "song", "home", 6, null, null, null, null, true),
             Bucketer.CONTROL,
+            TestProps.create().rerank("song"),
             UserFeatures.EMPTY,
             "items_x_8_v1",
-            0.7,
+            TestProps.create().candidates(),
             0,
             Deadline.in(Duration.ofSeconds(1)),
             false);
 
     // 4 non-A items can separate at most 6 slots (A x x A x x); beyond that the rules relax.
-    var out =
-        new DiversityReRanker(TestProps.create().rerank()).apply(ctx, ranked, 6).subList(0, 6);
+    var out = new DiversityReRanker().apply(ctx, ranked, 6).subList(0, 6);
     var artists = out.stream().map(ScoredCandidate::artistId).toList();
     for (int i = 1; i < artists.size(); i++) {
       assertThat(artists.get(i)).isNotEqualTo(artists.get(i - 1));
@@ -78,8 +78,8 @@ class DiversityAndBucketingTest {
         new Bucketer(
             "salt",
             List.of(
-                new Variant("control", 0, 500, RankerWeights.defaults()),
-                new Variant("treatment", 500, 1000, RankerWeights.defaults())));
+                new Variant("control", 0, 500, "heuristic", RankerWeights.defaults(), null),
+                new Variant("treatment", 500, 1000, "lightgbm", RankerWeights.defaults(), null)));
     assertThat(b.assign("user-42").id()).isEqualTo(b.assign("user-42").id());
     long treatment =
         java.util.stream.IntStream.range(0, 10_000)

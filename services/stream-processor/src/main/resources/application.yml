@@ -53,32 +53,118 @@ recs:
       neighbor-min-support: 2.0
       trending-top-n: 500
       affinity-max-entries: 50
-    # docs/architecture.md section 5. TODO(phase-2): per-domain weights for books, videos, posts.
-    song-signals:
-      event-weights:
-        SAVE: 2.0
-        LIKE: 1.5
-        SHARE: 1.5
-        REPLAY: 1.2
-        COMMENT: 1.0
-        SEARCH_RESULT_CLICK: 0.3
-        DISLIKE: -2.0
-        NOT_INTERESTED: -3.0
-      complete-threshold: 0.9
-      complete-weight: 1.0
-      listened-seconds: 30
-      listened-weight: 0.4
-      early-skip-seconds: 10
-      early-skip-weight: -0.8
-      mid-skip-seconds: 30
-      mid-skip-weight: -0.3
-      late-skip-ratio: 0.5
-      late-skip-weight: 0.2
-      browsing-skip-factor: 0.5
-      seek-forward-ratio: 0.3
-      seek-forward-weight: -0.1
-      follow-artist-weight: 1.0
-      rating-weight-per-star: 0.75
+      cross-domain-half-life: 7d
+      # Cross-domain taste must be fresh too (it drives cold-in-domain users); ~1 KB per write.
+      cross-domain-emit-interval: ${RECS_CROSS_DOMAIN_EMIT_INTERVAL:1s}
+      # Consumed items are hidden for this long: songs are replayable, books are read once.
+      consumed-windows: {song: 2h, video: 30d, book: 365d, post: 30d}
+      consumed-max: 500
+    # Embeddings topic of the current index; a re-embed writes catalog.embeddings.<index> and a
+    # shadow deployment switches this (docs/architecture.md §3.6).
+    embeddings-topic: ${RECS_EMBEDDINGS_TOPIC:catalog.embeddings.v1}
+    # Per-domain signal weights (docs/architecture.md section 5). 0 disables a threshold rule.
+    signals:
+      song:
+        event-weights: {SAVE: 2.0, LIKE: 1.5, SHARE: 1.5, REPLAY: 1.2, COMMENT: 1.0, SEARCH_RESULT_CLICK: 0.3, DISLIKE: -2.0, NOT_INTERESTED: -3.0}
+        complete-threshold: 0.9
+        complete-weight: 1.0
+        listened-seconds: 30
+        listened-ratio: 0
+        listened-weight: 0.4
+        abandon-ratio: 0
+        abandon-weight: 0
+        early-skip-seconds: 10
+        early-skip-weight: -0.8
+        mid-skip-seconds: 30
+        mid-skip-weight: -0.3
+        late-skip-ratio: 0.5
+        late-skip-weight: 0.2
+        browsing-skip-factor: 0.5
+        seek-forward-ratio: 0.3
+        seek-forward-weight: -0.1
+        dwell-seconds: 0
+        dwell-weight: 0
+        short-dwell-seconds: 0
+        short-dwell-weight: 0
+        follow-artist-weight: 1.0
+        rating-weight-per-star: 0.75
+      video:
+        # Completion is the strongest implicit signal; abandoning in the first 10% is negative.
+        event-weights: {SHARE: 1.5, LIKE: 1.2, SAVE: 1.2, COMMENT: 1.0, DISLIKE: -2.0, NOT_INTERESTED: -3.0}
+        complete-threshold: 0.9
+        complete-weight: 1.5
+        listened-seconds: 30
+        listened-ratio: 0.25
+        listened-weight: 0.5
+        abandon-ratio: 0.10
+        abandon-weight: -0.5
+        early-skip-seconds: 10
+        early-skip-weight: -0.5
+        mid-skip-seconds: 30
+        mid-skip-weight: -0.2
+        late-skip-ratio: 0.5
+        late-skip-weight: 0.2
+        browsing-skip-factor: 0.5
+        seek-forward-ratio: 0.3
+        seek-forward-weight: -0.1
+        dwell-seconds: 0
+        dwell-weight: 0
+        short-dwell-seconds: 0
+        short-dwell-weight: 0
+        follow-artist-weight: 1.0
+        rating-weight-per-star: 0.75
+      book:
+        # Ratings dominate ((stars-3) x 1.0); a save (want-to-read) beats a click; reading the
+        # detail page for 20 s is mild interest.
+        event-weights: {SAVE: 1.2, LIKE: 1.0, SHARE: 1.2, CLICK: 0.2, DISLIKE: -1.5, NOT_INTERESTED: -3.0}
+        complete-threshold: 0
+        complete-weight: 0
+        listened-seconds: 0
+        listened-ratio: 0
+        listened-weight: 0
+        abandon-ratio: 0
+        abandon-weight: 0
+        early-skip-seconds: 0
+        early-skip-weight: 0
+        mid-skip-seconds: 0
+        mid-skip-weight: 0
+        late-skip-ratio: 0
+        late-skip-weight: 0
+        browsing-skip-factor: 1
+        seek-forward-ratio: 0
+        seek-forward-weight: 0
+        dwell-seconds: 20
+        dwell-weight: 0.3
+        short-dwell-seconds: 0
+        short-dwell-weight: 0
+        follow-artist-weight: 1.0
+        rating-weight-per-star: 1.0
+      post:
+        # Active engagement (comment/share) beats passive (like); a scroll-past (<1 s dwell) is a
+        # very weak negative because feeds are skimmed.
+        event-weights: {COMMENT: 1.5, SHARE: 1.5, SAVE: 1.2, LIKE: 0.8, CLICK: 0.2, DISLIKE: -1.5, NOT_INTERESTED: -3.0}
+        complete-threshold: 0
+        complete-weight: 0
+        listened-seconds: 0
+        listened-ratio: 0
+        listened-weight: 0
+        abandon-ratio: 0
+        abandon-weight: 0
+        early-skip-seconds: 0
+        early-skip-weight: 0
+        mid-skip-seconds: 0
+        mid-skip-weight: 0
+        late-skip-ratio: 0
+        late-skip-weight: 0
+        browsing-skip-factor: 1
+        seek-forward-ratio: 0
+        seek-forward-weight: 0
+        dwell-seconds: 5
+        dwell-weight: 0.3
+        short-dwell-seconds: 1
+        short-dwell-weight: -0.05
+        follow-artist-weight: 1.0
+        rating-weight-per-star: 0.75
 management:
   endpoints:
     web:

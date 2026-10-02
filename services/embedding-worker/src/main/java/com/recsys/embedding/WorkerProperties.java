@@ -8,6 +8,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param alias alias the serving path reads
  * @param templateVersion version of the text templates; part of the content hash
  * @param embedBatchSize inputs per embeddings request
+ * @param embeddingsTopic topic the current index's embedding records go to
  */
 @ConfigurationProperties("recs.embedding")
 public record WorkerProperties(
@@ -18,4 +19,12 @@ public record WorkerProperties(
     String qdrantHost,
     int qdrantPort,
     Duration qdrantTimeout,
-    Duration userKeyTtl) {}
+    Duration userKeyTtl,
+    String embeddingsTopic) {
+
+  public WorkerProperties {
+    if (embeddingsTopic == null || embeddingsTopic.isBlank()) {
+      embeddingsTopic = com.recsys.common.Topics.CATALOG_EMBEDDINGS;
+    }
+  }
+}

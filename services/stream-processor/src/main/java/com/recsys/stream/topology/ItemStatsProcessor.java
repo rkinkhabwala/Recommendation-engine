@@ -7,6 +7,7 @@ import com.recsys.stream.model.EnrichedEvent;
 import com.recsys.stream.model.EventView;
 import com.recsys.stream.model.ItemStatsState;
 import com.recsys.stream.signals.SignalWeigher;
+import com.recsys.stream.signals.SignalWeighers;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -27,14 +28,14 @@ final class ItemStatsProcessor implements Processor<String, EnrichedEvent, Strin
   private static final double CTR_N = 10;
 
   private final TopologySettings s;
-  private final SignalWeigher weigher;
+  private final SignalWeighers weighers;
   private final Set<String> dirty = new HashSet<>();
   private ProcessorContext<String, byte[]> ctx;
   private KeyValueStore<String, ItemStatsState> store;
 
-  ItemStatsProcessor(TopologySettings settings, SignalWeigher weigher) {
+  ItemStatsProcessor(TopologySettings settings, SignalWeighers weighers) {
     this.s = settings;
-    this.weigher = weigher;
+    this.weighers = weighers;
   }
 
   @Override
@@ -53,7 +54,7 @@ final class ItemStatsProcessor implements Processor<String, EnrichedEvent, Strin
         e.durationMs() != null
             ? e.durationMs()
             : record.value().profile() == null ? null : record.value().profile().durationMs();
-    SignalWeigher.Kind kind = weigher.classify(e, duration);
+    SignalWeigher.Kind kind = weighers.get(e.domain()).classify(e, duration);
     if (kind == SignalWeigher.Kind.OTHER) {
       return;
     }

@@ -32,6 +32,17 @@ class MockEmbeddingClientTest {
   }
 
   @Test
+  void boilerplateDoesNotDominateCrossDomainSimilarity() {
+    float[] jazzBook =
+        embed(
+            "The Golden Heart: A jazz History by Author 5. Genres: jazz. A mellow history about jazz.");
+    float[] jazzSong = embed("Night Walk by The River 12. Genres: jazz. Mood: mellow.");
+    float[] goldenRockSong = embed("Golden Heart by The Storm 3. Genres: rock. Mood: energetic.");
+    assertThat(Vectors.cosine(jazzBook, jazzSong))
+        .isGreaterThan(Vectors.cosine(jazzBook, goldenRockSong));
+  }
+
+  @Test
   void scrubsDirectIdentifiers() {
     String s =
         PiiScrubber.scrub(

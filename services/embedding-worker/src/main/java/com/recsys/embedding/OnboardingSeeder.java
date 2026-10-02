@@ -19,7 +19,7 @@ import java.util.Map;
  * Free text is PII-scrubbed and sent without any user identifier. Until the seed exists the user
  * gets popular-in-region recommendations.
  *
- * <p>TODO(phase-2): artist picks → average of the artist's top tracks.
+ * <p>TODO(phase-3): creator picks → average of the creator's top items.
  */
 public final class OnboardingSeeder {
   private final EmbeddingClient client;
@@ -77,7 +77,7 @@ public final class OnboardingSeeder {
         new UserVector(
             o.getUserId(), props.indexVersion(), Vectors.toFloat16(seed), "onboarding", ts);
     sink.publish(
-        RedisKeys.userSeed(o.getUserId()),
+        RedisKeys.userSeed(o.getUserId(), o.getDomain().name().toLowerCase(java.util.Locale.ROOT)),
         FeatureEnvelope.encode(ts, props.userKeyTtl().toSeconds(), ts, data));
   }
 }

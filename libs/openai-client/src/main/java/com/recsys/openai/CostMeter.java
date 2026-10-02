@@ -29,6 +29,24 @@ public final class CostMeter {
         .register(registry);
   }
 
+  /** Chat models price input and output tokens differently ({@code <model>:output}). */
+  public void recordChat(String model, String job, long inputTokens, long outputTokens) {
+    record(model, job, inputTokens);
+    double outPrice = pricePerMillion.getOrDefault(model + ":output", 0.0);
+    double usd = outputTokens / 1_000_000.0 * outPrice;
+    Counter.builder("recs_openai_tokens_total")
+        .tag("model", model + ":output")
+        .tag("job", job)
+        .register(registry)
+        .increment(outputTokens);
+    Counter.builder("recs_openai_cost_usd_total")
+        .tag("model", model + ":output")
+        .tag("job", job)
+        .register(registry)
+        .increment(usd);
+    budget.addSpend(usd);
+  }
+
   public void record(String model, String job, long tokens) {
     double price = pricePerMillion.getOrDefault(model, 0.0);
     if (price == 0.0 && !model.startsWith("mock")) {

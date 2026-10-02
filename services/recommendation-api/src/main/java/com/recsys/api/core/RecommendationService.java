@@ -1,15 +1,17 @@
 package com.recsys.api.core;
 
+import com.recsys.api.candidates.Candidate;
 import com.recsys.api.candidates.CandidateService;
 import com.recsys.api.candidates.ScoredCandidate;
 import com.recsys.api.candidates.Sources;
 import com.recsys.api.config.ApiProperties;
 import com.recsys.api.config.ApiProperties.Variant;
-import com.recsys.api.experiment.Bucketer;
+import com.recsys.api.experiment.Experiments;
 import com.recsys.api.fallback.PopularCache;
 import com.recsys.api.hydration.Hydrator;
 import com.recsys.api.logging.ServedLogger;
 import com.recsys.api.ranking.Ranker;
+import com.recsys.api.ranking.RankerRegistry;
 import com.recsys.api.rerank.ReRanker;
 import com.recsys.common.Deadline;
 import com.recsys.common.Ids;
@@ -17,11 +19,14 @@ import com.recsys.events.v1.Domain;
 import com.recsys.events.v1.RecommendationServed;
 import com.recsys.events.v1.ServedItem;
 import com.recsys.features.FeatureReader;
+import com.recsys.features.RedisKeys;
+import com.recsys.features.model.Explanation;
 import com.recsys.features.model.UserFeatures;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -34,20 +39,20 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
 
 /**
- * The hot path: user features → parallel candidate generation → hydration → ranking → re-ranking →
- * fallback/top-up → async served log. Reads only precomputed data (Redis, Qdrant, in-process
- * caches); it never calls OpenAI and never throws for a dependency failure — it degrades and
- * reports {@link FallbackLevel}.
+ * The hot path: user features → parallel candidate generation → hydration → ranking (heuristic or
+ * learned, per A/B variant) → re-ranking → fallback/top-up → cached explanations → async served
+ * log. Reads only precomputed data (Redis, Qdrant, in-process caches, model files); it never calls
+ * OpenAI and never throws for a dependency failure — it degrades and reports {@link FallbackLevel}.
  */
 public final class RecommendationService {
   private final FeatureReader features;
   private final CandidateService candidates;
   private final Hydrator hydrator;
-  private final Ranker ranker;
+  private final RankerRegistry rankers;
   private final List<ReRanker> reRankers;
   private final PopularCache popular;
   private final ServedLogger servedLogger;
-  private final Bucketer bucketer;
+  private final Experiments experiments;
   private final ApiProperties props;
   private final CircuitBreaker redisBreaker;
   private final MeterRegistry metrics;
@@ -57,11 +62,11 @@ public final class RecommendationService {
       FeatureReader features,
       CandidateService candidates,
       Hydrator hydrator,
-      Ranker ranker,
+      RankerRegistry rankers,
       List<ReRanker> reRankers,
       PopularCache popular,
       ServedLogger servedLogger,
-      Bucketer bucketer,
+      Experiments experiments,
       ApiProperties props,
       CircuitBreaker redisBreaker,
       MeterRegistry metrics,
@@ -69,11 +74,11 @@ public final class RecommendationService {
     this.features = features;
     this.candidates = candidates;
     this.hydrator = hydrator;
-    this.ranker = ranker;
+    this.rankers = rankers;
     this.reRankers = reRankers;
     this.popular = popular;
     this.servedLogger = servedLogger;
-    this.bucketer = bucketer;
+    this.experiments = experiments;
     this.props = props;
     this.redisBreaker = redisBreaker;
     this.metrics = metrics;
@@ -84,7 +89,8 @@ public final class RecommendationService {
     Timer.Sample total = Timer.start(metrics);
     Deadline deadline = Deadline.in(props.deadline());
     var budgets = props.budgets();
-    Variant variant = bucketer.assign(req.userId());
+    String domain = req.domain();
+    Variant variant = experiments.variant(domain, req.userId());
     FallbackLevel level = FallbackLevel.NONE;
     long now = clock.millis();
 
@@ -95,7 +101,9 @@ public final class RecommendationService {
               "user_features",
               () ->
                   redisBreaker.executeSupplier(
-                      () -> features.user(req.userId(), deadline.budget(budgets.userFeatures()))));
+                      () ->
+                          features.user(
+                              req.userId(), domain, deadline.budget(budgets.userFeatures()))));
     } catch (RuntimeException e) {
       uf = UserFeatures.EMPTY;
       level = FallbackLevel.ANONYMOUS;
@@ -106,9 +114,10 @@ public final class RecommendationService {
         RecContext.of(
             req,
             variant,
+            props.rerank(domain),
             uf,
             props.indexVersion(),
-            props.candidates().shortTermBlend(),
+            props.candidates(),
             now,
             deadline,
             logFeatures);
@@ -120,7 +129,7 @@ public final class RecommendationService {
       level = level.worst(FallbackLevel.PARTIAL);
     }
     if (pool.isEmpty()) {
-      var p = popular.get(req.domain(), req.country());
+      var p = popular.get(domain, req.country());
       level = level.worst(p.fromStatic() ? FallbackLevel.STATIC : FallbackLevel.CACHED_POPULAR);
       pool = popularPool(p.items(), Set.of());
     }
@@ -137,12 +146,18 @@ public final class RecommendationService {
       level = level.worst(FallbackLevel.PARTIAL);
     }
 
+    Ranker ranker = rankers.forVariant(domain, variant);
     List<ScoredCandidate> ranked =
         stage("rank", () -> rerank(ctx, ranker.rank(ctx, finalPool.values()), req.limit()));
     List<ScoredCandidate> items =
         new ArrayList<>(ranked.subList(0, Math.min(req.limit(), ranked.size())));
     if (items.size() < req.limit()) {
       topUp(ctx, items, req.limit());
+    }
+    if (level != FallbackLevel.CACHED_POPULAR && level != FallbackLevel.STATIC) {
+      stage(
+          "explanations",
+          () -> attachExplanations(domain, items, deadline.budget(budgets.explanations())));
     }
 
     String recId = Ids.newId();
@@ -158,16 +173,35 @@ public final class RecommendationService {
     if (servedLogger != null) {
       servedLogger.log(toServed(req, result, ctx.logFeatures()));
     }
-    metrics.counter("recs_api_fallback_total", "level", level.name()).increment();
+    metrics.counter("recs_api_fallback_total", "domain", domain, "level", level.name()).increment();
     total.stop(
         Timer.builder("recs_api_request_seconds")
-            .tag("domain", req.domain())
+            .tag("domain", domain)
             .tag("fallback", level.name())
             .publishPercentileHistogram()
-            .serviceLevelObjectives(
-                java.time.Duration.ofMillis(30), java.time.Duration.ofMillis(100))
+            .serviceLevelObjectives(Duration.ofMillis(30), Duration.ofMillis(100))
             .register(metrics));
     return result;
+  }
+
+  /** Read-only lookup of cached LLM explanations; a miss leaves the client-side template. */
+  private boolean attachExplanations(String domain, List<ScoredCandidate> items, Duration budget) {
+    Map<String, ScoredCandidate> byKey = new LinkedHashMap<>();
+    for (ScoredCandidate c : items) {
+      if (c.reason != null && c.reason != ReasonCode.POPULAR_FALLBACK) {
+        byKey.put(RedisKeys.explanation(domain, c.reason.name(), c.seedItemId, c.itemId), c);
+      }
+    }
+    if (byKey.isEmpty()) {
+      return true;
+    }
+    try {
+      Map<String, Explanation> found = features.explanations(byKey.keySet(), budget);
+      found.forEach((k, e) -> byKey.get(k).explanation = e.text());
+      return true;
+    } catch (RuntimeException e) {
+      return false; // explanations are optional; never degrade the response for them
+    }
   }
 
   private List<ScoredCandidate> rerank(RecContext ctx, List<ScoredCandidate> ranked, int limit) {
@@ -184,14 +218,14 @@ public final class RecommendationService {
     items.forEach(i -> exclude.add(i.itemId));
     var st = ctx.shortTerm();
     if (st != null) {
-      exclude.addAll(st.recentlyPlayed().keySet());
+      exclude.addAll(st.consumed().keySet());
       exclude.addAll(st.suppressedItems());
     }
     if (ctx.request().seedItemId() != null) {
       exclude.add(ctx.request().seedItemId());
     }
     for (ScoredCandidate c :
-        popularPool(popular.get(ctx.request().domain(), ctx.region()).items(), exclude).values()) {
+        popularPool(popular.get(ctx.domain(), ctx.region()).items(), exclude).values()) {
       if (items.size() >= limit) {
         break;
       }
@@ -209,7 +243,7 @@ public final class RecommendationService {
       }
       var c = new ScoredCandidate(id);
       c.absorb(
-          new com.recsys.api.candidates.Candidate(
+          new Candidate(
               id,
               Sources.POPULAR_FALLBACK,
               1.0 - (double) i / Math.max(1, n),
@@ -235,6 +269,7 @@ public final class RecommendationService {
               .setSources(List.copyOf(c.sourceScores.keySet()))
               .setReasonCode(
                   c.reason == null ? ReasonCode.POPULAR_FALLBACK.name() : c.reason.name())
+              .setSeedItemId(c.seedItemId)
               .setExplore(c.explore)
               .setPropensity(c.propensity)
               .setFeatures(logFeatures && !c.features.isEmpty() ? Map.copyOf(c.features) : null)

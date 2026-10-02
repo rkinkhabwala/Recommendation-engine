@@ -1,0 +1,16 @@
+{
+  "type": "record",
+  "name": "ItemEmbedding",
+  "namespace": "com.recsys.events.v1",
+  "doc": "Item embedding. Topic catalog.embeddings.v1 (compacted), keyed by item_id.",
+  "fields": [
+    {"name": "item_id", "type": "string"},
+    {"name": "domain", "type": "com.recsys.events.v1.Domain"},
+    {"name": "index_version", "type": "string", "doc": "e.g. items_te3s_512_v1"},
+    {"name": "model", "type": "string"},
+    {"name": "dims", "type": "int"},
+    {"name": "content_hash", "type": "string"},
+    {"name": "vector", "type": {"type": "array", "items": "float"}},
+    {"name": "embedded_at", "type": {"type": "long", "logicalType": "timestamp-millis"}}
+  ]
+}

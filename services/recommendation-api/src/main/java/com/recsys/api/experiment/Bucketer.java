@@ -11,7 +11,8 @@ import org.apache.kafka.common.utils.Utils;
  * user, same salt → same variant on every request and every replica.
  */
 public final class Bucketer {
-  public static final Variant CONTROL = new Variant("control", 0, 1000, RankerWeights.defaults());
+  public static final Variant CONTROL =
+      new Variant("control", 0, 1000, "heuristic", RankerWeights.defaults(), null);
 
   private final String salt;
   private final List<Variant> variants;

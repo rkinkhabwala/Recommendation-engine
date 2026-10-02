@@ -1,5 +1,6 @@
 package com.recsys.features;
 
+import com.recsys.features.model.Explanation;
 import com.recsys.features.model.ItemMeta;
 import com.recsys.features.model.ItemStats;
 import com.recsys.features.model.Neighbors;
@@ -75,11 +76,17 @@ public class InMemoryFeatureStore implements FeatureReader, FeatureWriter {
   }
 
   @Override
-  public UserFeatures user(String userId, Duration timeout) {
+  public UserFeatures user(String userId, String domain, Duration timeout) {
     return new UserFeatures(
-        get(RedisKeys.userShortTerm(userId), UserShortTerm.class),
-        get(RedisKeys.userLongTerm(userId), UserVector.class),
-        get(RedisKeys.userSeed(userId), UserVector.class));
+        get(RedisKeys.userShortTerm(userId, domain), UserShortTerm.class),
+        get(RedisKeys.userLongTerm(userId, domain), UserVector.class),
+        get(RedisKeys.userSeed(userId, domain), UserVector.class),
+        get(RedisKeys.userCrossDomain(userId), UserVector.class));
+  }
+
+  @Override
+  public Map<String, Explanation> explanations(Collection<String> keys, Duration timeout) {
+    return many(keys, k -> k, Explanation.class);
   }
 
   @Override

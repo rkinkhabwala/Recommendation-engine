@@ -39,7 +39,15 @@ class OnboardingSeederTest {
     var published = new java.util.HashMap<String, byte[]>();
     var props =
         new WorkerProperties(
-            "items_mock_64_v1", "items_current", "song-v1", 10, "x", 0, null, Duration.ofDays(30));
+            "items_mock_64_v1",
+            "items_current",
+            "song-v1",
+            10,
+            "x",
+            0,
+            null,
+            Duration.ofDays(30),
+            null);
     var seeder = new OnboardingSeeder(spy, new InMemoryVectorIndex(), published::put, props);
 
     seeder.seed(
@@ -52,7 +60,7 @@ class OnboardingSeederTest {
             .build());
 
     assertThat(sent).noneMatch(s -> s.contains("u_42") || s.contains("example.com"));
-    byte[] env = published.get(com.recsys.features.RedisKeys.userSeed("u_42"));
+    byte[] env = published.get(com.recsys.features.RedisKeys.userSeed("u_42", "song"));
     var seed =
         com.recsys.features.FeatureJson.read(
             com.recsys.features.FeatureEnvelope.decode(env).dataBytes(),

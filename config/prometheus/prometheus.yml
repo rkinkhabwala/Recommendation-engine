@@ -13,3 +13,4 @@ scrape_configs:
           - catalog-service:8082
           - stream-processor:8083
           - embedding-worker:8084
+          - enrichment-worker:8086

@@ -8,7 +8,10 @@ x-service-env: &service-env
   QDRANT_HOST: qdrant
   QDRANT_GRPC_PORT: "6334"
   RECS_API_KEYS: ${RECS_API_KEYS:-dev-key}
-  RECS_INDEX_VERSION: ${RECS_INDEX_VERSION:-items_mock_512_v1}
+  # Current embedding space + its embeddings topic. A re-embed (README: Re-embedding) builds a new
+  # index and topic, then switches both here.
+  RECS_INDEX_VERSION: ${RECS_INDEX_VERSION:-items_mock_512_v2}
+  RECS_EMBEDDINGS_TOPIC: ${RECS_EMBEDDINGS_TOPIC:-catalog.embeddings.v1}
   LOG_FORMAT: ${LOG_FORMAT:-ecs}
 
 # Every container has a memory limit: without one each JVM sizes its heap from the whole Docker VM
@@ -161,13 +164,52 @@ services:
       RECS_EMBEDDING_MODEL: ${RECS_EMBEDDING_MODEL:-text-embedding-3-small}
       RECS_EMBEDDING_DIMS: ${RECS_EMBEDDING_DIMS:-512}
 
+  enrichment-worker:
+    <<: *service
+    build: {context: ., dockerfile: docker/service.Dockerfile, target: service, args: {SERVICE: enrichment-worker}}
+    image: recsys/enrichment-worker:local
+    mem_limit: 640m
+    ports: ["8086:8086"]
+    environment:
+      <<: *service-env
+      CATALOG_URL: http://catalog-service:8082
+      RECS_API_KEY: ${RECS_API_KEYS:-dev-key}
+      # mock (default): deterministic lexicon/template LLM. openai: set OPENAI_API_KEY and RECS_CHAT_MODEL.
+      RECS_OPENAI_MODE: ${RECS_OPENAI_MODE:-mock}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      RECS_CHAT_MODEL: ${RECS_CHAT_MODEL:-gpt-5-mini}
+      RECS_EXPLANATION_SAMPLE_PERCENT: ${RECS_EXPLANATION_SAMPLE_PERCENT:-20}
+      SPRING_KAFKA_LISTENER_CONCURRENCY: "3" # one consumer thread per partition
+
   recommendation-api:
     <<: *service
     build: {context: ., dockerfile: docker/service.Dockerfile, target: service, args: {SERVICE: recommendation-api}}
     image: recsys/recommendation-api:local
     mem_limit: 1g
     ports: ["8080:8080"]
-    environment: *service-env
+    environment:
+      <<: *service-env
+      RECS_MODEL_DIR: /models
+      # Local default logs features for half of the requests so the learned ranker has data quickly.
+      RECS_FEATURE_LOG_SAMPLE_RATE: ${RECS_FEATURE_LOG_SAMPLE_RATE:-0.5}
+    volumes: ["./ml/models:/models:ro"]
+
+  # Offline ML (docker compose --profile ml run --rm ml <command>):
+  #   recsys-export --out data      Kafka -> Parquet (pseudonymized)
+  #   recsys-train --domain song    LightGBM LambdaRank, offline eval, gated promotion
+  #   recsys-ab-report --split control=0.5,lgbm_thompson=0.5
+  ml:
+    profiles: ["ml"]
+    build: {context: ./ml}
+    image: recsys/ml:local
+    environment:
+      KAFKA_BOOTSTRAP: kafka:29092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      EXPORT_HMAC_SECRET: ${EXPORT_HMAC_SECRET:-local-dev-only-secret}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - ./ml/data:/app/data
+      - ./ml/models:/app/models
 
   prometheus:
     image: prom/prometheus:v3.15.0

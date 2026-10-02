@@ -30,6 +30,11 @@ class RecommendationControllerTest {
     ApiProperties props() {
       return TestProps.create();
     }
+
+    @Bean
+    com.recsys.api.experiment.Experiments experiments(ApiProperties props) {
+      return new com.recsys.api.experiment.Experiments(props.experiments());
+    }
   }
 
   @Test
@@ -37,7 +42,7 @@ class RecommendationControllerTest {
     mvc.perform(
             get("/v1/recommendations")
                 .param("userId", "u1")
-                .param("domain", "book")
+                .param("domain", "podcast")
                 .header("X-Api-Key", "k1"))
         .andExpect(status().isBadRequest())
         .andExpect(jsonPath("$.error").value("DOMAIN_NOT_ENABLED"));
@@ -57,7 +62,7 @@ class RecommendationControllerTest {
             get("/v1/recommendations")
                 .param("userId", "u1")
                 .param("domain", "song")
-                .param("context", "feed")
+                .param("context", "lobby")
                 .header("X-Api-Key", "k1"))
         .andExpect(jsonPath("$.error").value("INVALID_CONTEXT"));
   }

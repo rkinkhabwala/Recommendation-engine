@@ -24,6 +24,7 @@ import com.recsys.stream.model.WindowCount;
 import com.recsys.stream.serde.JsonSerde;
 import com.recsys.stream.serde.StreamSerdes;
 import com.recsys.stream.signals.SignalWeigher;
+import com.recsys.stream.signals.SignalWeighers;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -69,7 +70,19 @@ public final class RecsTopology {
   private RecsTopology() {}
 
   public static Topology build(
-      TopologySettings s, SignalWeigher weigher, StreamSerdes avro, OnlineMetrics metrics) {
+      TopologySettings s, SignalWeighers weighers, StreamSerdes avro, OnlineMetrics metrics) {
+    return build(s, weighers, avro, metrics, Topics.CATALOG_EMBEDDINGS);
+  }
+
+  /**
+   * @param embeddingsTopic per-index embeddings topic (a re-embed writes a new topic)
+   */
+  public static Topology build(
+      TopologySettings s,
+      SignalWeighers weighers,
+      StreamSerdes avro,
+      OnlineMetrics metrics,
+      String embeddingsTopic) {
     StreamsBuilder b = new StreamsBuilder();
     Serde<String> str = Serdes.String();
     Serde<byte[]> bytes = Serdes.ByteArray();
@@ -94,7 +107,7 @@ public final class RecsTopology {
             Topics.CATALOG_ITEMS, Consumed.with(str, avro.catalogItem).withName("catalog-items"));
     KTable<String, ItemEmbedding> embeddings =
         b.table(
-                Topics.CATALOG_EMBEDDINGS,
+                embeddingsTopic,
                 Consumed.with(str, avro.itemEmbedding).withName("catalog-embeddings"))
             .filter((id, e) -> s.indexVersion().equals(e.getIndexVersion()));
     KTable<String, ItemProfile> profiles =
@@ -153,12 +166,17 @@ public final class RecsTopology {
     // ---- item statistics
     byItem
         .process(
-            () -> new ItemStatsProcessor(s, weigher), Named.as("item-stats"), StoreNames.ITEM_STATS)
+            () -> new ItemStatsProcessor(s, weighers),
+            Named.as("item-stats"),
+            StoreNames.ITEM_STATS)
         .to(Topics.FEATURES_ITEM, Produced.with(str, bytes));
 
     // ---- trending: event-time windows with grace, then two-stage top-K
     byItem
-        .filter((k, v) -> "PLAY_START".equals(v.event().eventType()))
+        .filter(
+            (k, v) ->
+                weighers.get(v.event().domain()).classify(v.event(), v.event().durationMs())
+                    == SignalWeigher.Kind.START)
         .flatMap((k, v) -> trendingKeys(v.event()))
         .groupByKey(Grouped.with("trending-plays", str, str))
         .windowedBy(TimeWindows.ofSizeAndGrace(s.trendingWindow(), s.trendingGrace()))
@@ -203,7 +221,7 @@ public final class RecsTopology {
                     .withKeySerde(str)
                     .withValueSerde(JsonSerde.of(UserInput.class)))
             .process(
-                () -> new UserFeatureProcessor(s, weigher),
+                () -> new UserFeatureProcessor(s, weighers),
                 Named.as("user-features"),
                 StoreNames.USER_STATE);
     var userBranches =
@@ -228,7 +246,7 @@ public final class RecsTopology {
         .to(Topics.FEATURES_ITEM, Produced.with(str, bytes));
 
     // ---- feedback loop: attribute engagement to served recommendations
-    Attribution attribution = new Attribution(weigher);
+    Attribution attribution = new Attribution(weighers);
     KStream<String, ServedRef> served =
         b.stream(Topics.RECS_SERVED, Consumed.with(str, avro.served).withName("recs-served"))
             .peek((k, v) -> metrics.served(v))

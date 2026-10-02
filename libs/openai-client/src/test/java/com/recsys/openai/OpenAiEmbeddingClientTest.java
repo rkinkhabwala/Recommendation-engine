@@ -67,7 +67,8 @@ class OpenAiEmbeddingClientTest {
             Duration.ofMillis(5),
             1000,
             budget,
-            Map.of("text-embedding-3-small", 0.02));
+            Map.of("text-embedding-3-small", 0.02),
+            "gpt-test");
     var cost =
         new CostMeter(
             registry, settings.pricePerMillionTokens(), new BudgetGuard(budget, Clock.systemUTC()));
@@ -148,7 +149,8 @@ class OpenAiEmbeddingClientTest {
 
   @Test
   void requiresApiKey() {
-    var settings = new OpenAiSettings("openai", null, "", "m", 3, null, 0, null, 0, 0, Map.of());
+    var settings =
+        new OpenAiSettings("openai", null, "", "m", 3, null, 0, null, 0, 0, Map.of(), null);
     assertThatThrownBy(() -> new OpenAiEmbeddingClient(settings, null, registry))
         .hasMessageContaining("OPENAI_API_KEY");
   }

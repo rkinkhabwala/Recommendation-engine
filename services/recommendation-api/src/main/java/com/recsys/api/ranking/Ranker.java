@@ -6,8 +6,9 @@ import java.util.Collection;
 import java.util.List;
 
 /**
- * Scores and orders candidates. {@link HeuristicRanker} today; TODO(phase-2): LightGbmRanker behind
- * the same interface, trained on recs.attributed.v1 joined with logged features.
+ * Scores and orders candidates. Implementations: {@link HeuristicRanker} and {@link LightGbmRanker}
+ * (trained offline by ml/recsys_ml/train.py, loaded by {@link RankerRegistry}). Each A/B variant
+ * chooses one.
  */
 public interface Ranker {
   String version();

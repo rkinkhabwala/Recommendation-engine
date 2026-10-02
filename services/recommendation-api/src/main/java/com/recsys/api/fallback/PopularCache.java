@@ -27,9 +27,17 @@ public class PopularCache {
   private final Map<String, List<String>> lists = new ConcurrentHashMap<>();
   private final List<String> staticList;
 
-  public PopularCache(FeatureReader features, String staticResource) {
+  private final Map<String, List<String>> staticLists = new ConcurrentHashMap<>();
+
+  /**
+   * @param staticResourcePattern classpath pattern with {@code %s} for the domain
+   */
+  public PopularCache(FeatureReader features, String staticResourcePattern) {
     this.features = features;
-    this.staticList = loadStatic(staticResource);
+    this.staticList = loadStatic(staticResourcePattern.formatted("song"));
+    for (String d : com.recsys.common.Domains.ALL) {
+      staticLists.put(d, loadStatic(staticResourcePattern.formatted(d)));
+    }
   }
 
   public record Popular(List<String> items, boolean fromStatic) {}
@@ -45,14 +53,16 @@ public class PopularCache {
     }
     out.addAll(lists.getOrDefault(key(domain, "GLOBAL"), List.of()));
     if (out.isEmpty()) {
-      return new Popular(staticList, true);
+      return new Popular(staticLists.getOrDefault(domain, staticList), true);
     }
     return new Popular(new ArrayList<>(out), false);
   }
 
   @Scheduled(fixedDelayString = "${recs.api.popular-refresh:60s}", initialDelay = 0)
   public void refresh() {
-    lists.putIfAbsent(key("song", "GLOBAL"), List.of());
+    for (String d : com.recsys.common.Domains.ALL) {
+      lists.putIfAbsent(key(d, "GLOBAL"), List.of());
+    }
     for (String key : List.copyOf(lists.keySet())) {
       String[] p = key.split("\\|");
       try {

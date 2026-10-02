@@ -1,16 +1,18 @@
 # CLAUDE.md
 
-Real-time recommendation system (songs → books, videos, posts). Full spec: `spec.md`.
+Real-time recommendation system for songs, books, videos and posts. Full spec: `spec.md`.
 Technical design: `docs/architecture.md`. (`architecture.md` at the root is a plain-language explainer, not the design.)
 
 ## Current phase
-Phase 1 (songs MVP) is implemented and awaiting review. Phase 2 starts only when the user explicitly
-says so. Pause for review after each phase. Mark deferred work as `// TODO(phase-2): ...` / `TODO(phase-3)`.
+Phases 1 (songs MVP) and 2 (multi-domain, LLM enrichment/explanations, learned ranker, A/B,
+cross-domain) are implemented and awaiting review. Phase 3 (production hardening) starts only when
+the user explicitly says so. Pause for review after each phase. Mark deferred work as `// TODO(phase-3): ...`.
 
 ## Hard rules
 1. **OpenAI is never called in the serving path.** `services/recommendation-api` must not depend on
    `libs/openai-client` (enforced by an ArchUnit test and a Gradle dependency check). The hot path reads only
-   precomputed data from Redis, Qdrant and in-process caches.
+   precomputed data from Redis, Qdrant, in-process caches and model files. LLM work (enrichment,
+   explanations) runs only in `enrichment-worker`; serving reads explanation caches read-only.
 2. **All external writes are idempotent.** Kafka Streams exactly-once covers Kafka→Kafka only. Writes to
    Redis/Qdrant/Postgres are keyed upserts carrying a monotonic `seq` (or version); the writer applies a
    compare-and-set (Redis Lua script) so a replayed record can never regress state. Never use `INCR`/`ZINCRBY`
@@ -27,7 +29,15 @@ says so. Pause for review after each phase. Mark deferred work as `// TODO(phase
    Call `AvroTrust.install()` in any process that deserializes Avro.
 8. **Secrets** come from env vars (`OPENAI_API_KEY`) or a secrets manager, never committed. The default
    `recs.openai.mode=mock` means local runs and tests need no key.
-9. **Deletion-aware retention:** raw/user-keyed delete-policy topics ≤ 7d; compacted user-keyed topics set
+9. **Redis is a rebuildable view:** only the feature-writer writes it, from compacted `features.*`
+   topics (workers publish features to Kafka, never to Redis). User keys are per domain:
+   `u:{id}:st|lt|seed:<domain>` plus `u:{id}:x` (cross-domain).
+10. **Training/serving parity:** both rankers use `FeatureExtractor`; changing `FeatureExtractor.FEATURES`
+   requires the same change in `ml/recsys_ml/__init__.py` and retraining (the registry refuses mismatches).
+11. **Embedding-space changes need a new index version** (model, dims, template or mock embedder):
+   backfill → new collection + `catalog.embeddings.<index>` topic → switch `RECS_INDEX_VERSION` and
+   `RECS_EMBEDDINGS_TOPIC` everywhere (see README "Re-embedding"). The local `.env` holds the current values.
+12. **Deletion-aware retention:** raw/user-keyed delete-policy topics ≤ 7d; compacted user-keyed topics set
    `max.compaction.lag.ms` so tombstones actually purge data. See architecture §9.
 
 ## Stack
@@ -44,14 +54,15 @@ Prod target: Kubernetes on AWS (Phase 3).
 - `libs/feature-store` holds the Redis key schema plus typed readers and writers shared by the stream processor and the API.
 - `libs/vector-index` holds the `VectorIndex` interface, the Qdrant implementation and an in-memory test fixture.
 - `libs/web-support` holds the API-key filter and error mapping (Spring auto-configuration).
-- `libs/openai-client` holds the `EmbeddingClient` interface, the OpenAI implementation (retries, breaker, rate limiting, cost metrics) and `MockEmbeddingClient`.
+- `libs/openai-client` holds the embeddings, structured-output chat and Batch API clients, plus the `EmbeddingClient` interface, the OpenAI implementation (retries, breaker, rate limiting, cost metrics) and `MockEmbeddingClient`.
 - `services/ingestion-api` takes `POST /v1/events`, validates the JSON, converts it to Avro and produces it.
 - `services/catalog-service` takes catalog upserts, writes them to Postgres and produces `catalog.items.v1`.
 - `services/stream-processor` runs the Kafka Streams topology plus the feature-writer (Redis CAS sink).
-- `services/embedding-worker` consumes `catalog.items.v1`, calls OpenAI (or the mock), and writes to Qdrant and `catalog.embeddings.v1`.
+- `services/embedding-worker` consumes `catalog.items.v1`, calls OpenAI (or the mock), and writes to Qdrant and the current embeddings topic. It also runs the backfill / re-embed job (profile `backfill`).
+- `services/enrichment-worker` runs LLM metadata enrichment (writing through the catalog-service PATCH endpoint) and cached explanations (published to `features.item.v1`).
 - `services/recommendation-api` serves `GET /v1/recommendations` through candidate generation, ranking, re-ranking and fallback.
-- `tools/event-simulator` generates a synthetic catalog and user behaviour.
-- `ml/` holds the Python training and evaluation code (Phase 2).
+- `tools/event-simulator` generates synthetic catalogs and user behaviour for all four domains, and runs the freshness checks.
+- `ml/` (Python 3.12, uv, runs in Docker) handles export, dataset, LightGBM training, gating, the registry (`ml/models`), the A/B report and the embedding-dims benchmark.
 
 ## Commands
 ```bash
@@ -63,7 +74,8 @@ Prod target: Kubernetes on AWS (Phase 3).
 docker compose up -d            # Kafka, Schema Registry, Redis, Qdrant, Postgres, Prometheus, all services
 docker compose --profile sim run --rm simulator all        # load the catalog + simulate listeners
 docker compose --profile sim run --rm simulator freshness  # end-to-end freshness check (<5 s)
-# cd ml && uv sync && uv run pytest                        # from Phase 2
+docker compose --profile ml run --rm ml recsys-export --out data   # then recsys-train / recsys-ab-report / recsys-promote
+docker build -t recsys/ml:local ml && docker run --rm recsys/ml:local pytest -q  # ML tests (LightGBM needs libgomp → Docker)
 ```
 - The Gradle daemon runs on JDK 21 (`gradle/gradle-daemon-jvm.properties`). google-java-format breaks on newer JDKs.
 - This checkout lives in an iCloud-synced folder. `~/.gradle/gradle.properties` sets
@@ -74,7 +86,8 @@ docker compose --profile sim run --rm simulator freshness  # end-to-end freshnes
 ## Coding standards
 - Use records for DTOs and config (`@ConfigurationProperties` records), sealed interfaces for closed hierarchies,
   and constructor injection. No Lombok.
-- Extension points are interfaces: `CandidateGenerator`, `Ranker`, `ReRanker`, `EmbeddingClient`.
+- Extension points are interfaces: `CandidateGenerator`, `Ranker`, `ReRanker`, `EmbeddingClient`, `ChatClient`.
+  Per-domain behaviour is configuration (signal weights, re-rank rules, experiments), not branches.
   New strategies are new implementations, never `if` branches inside existing ones.
 - Package by feature (`candidates`, `ranking`, `rerank`), not by layer.
 - Formatting uses google-java-format via Spotless. Use `var` only when the type is obvious.

@@ -1,0 +1,14 @@
+# Backfill / re-embed mode: no listeners, run BackfillRunner and exit.
+spring:
+  kafka:
+    listener:
+      auto-startup: false
+  main:
+    web-application-type: none
+recs:
+  backfill:
+    enabled: true
+    # target-index: items_te3s_1536_v1   (required; dims must match recs.openai.dimensions)
+    switch-alias: false
+    chunk-size: 5000
+    poll-interval: 30s

@@ -8,7 +8,9 @@ import java.util.Map;
  *
  * @param mode "mock" (default) or "openai"
  * @param apiKey from env/secrets manager only; required when mode=openai
- * @param pricePerMillionTokens USD per 1M input tokens by model, for cost metrics and budget
+ * @param pricePerMillionTokens USD per 1M tokens: key {@code <model>} for input tokens and {@code
+ *     <model>:output} for output tokens; used for cost metrics and the budget guard
+ * @param chatModel LLM used for enrichment and explanations (configurable; verify current models)
  * @param monthlyBudgetUsd 0 disables the budget guard
  */
 public record OpenAiSettings(
@@ -22,7 +24,8 @@ public record OpenAiSettings(
     Duration initialBackoff,
     int requestsPerMinute,
     double monthlyBudgetUsd,
-    Map<String, Double> pricePerMillionTokens) {
+    Map<String, Double> pricePerMillionTokens,
+    String chatModel) {
 
   public OpenAiSettings {
     if (mode == null || mode.isBlank()) {
@@ -48,6 +51,9 @@ public record OpenAiSettings(
     }
     if (embeddingModel == null || embeddingModel.isBlank()) {
       throw new IllegalArgumentException("embedding model must be configured");
+    }
+    if (chatModel == null || chatModel.isBlank()) {
+      chatModel = "gpt-5-mini";
     }
     pricePerMillionTokens =
         pricePerMillionTokens == null ? Map.of() : Map.copyOf(pricePerMillionTokens);

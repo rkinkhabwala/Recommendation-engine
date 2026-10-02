@@ -28,23 +28,27 @@ public class CatalogRepository {
     return jdbc.sql(
             """
             INSERT INTO items (item_id, domain, title, creator_id, creator_name, genres, mood_tags,
-                               duration_ms, release_date, explicit, available_regions, description)
-            VALUES (:id, :domain, :title, :cid, :cname, :genres, :moods, :dur, :rel, :explicit, :regions, :descr)
+                               duration_ms, release_date, explicit, available_regions, description,
+                               transcript_summary)
+            VALUES (:id, :domain, :title, :cid, :cname, :genres, :moods, :dur, :rel, :explicit, :regions, :descr,
+                    :transcript)
             ON CONFLICT (item_id) DO UPDATE SET
                 domain = EXCLUDED.domain, title = EXCLUDED.title, creator_id = EXCLUDED.creator_id,
                 creator_name = EXCLUDED.creator_name, genres = EXCLUDED.genres,
                 mood_tags = EXCLUDED.mood_tags, duration_ms = EXCLUDED.duration_ms,
                 release_date = EXCLUDED.release_date, explicit = EXCLUDED.explicit,
                 available_regions = EXCLUDED.available_regions, description = EXCLUDED.description,
+                transcript_summary = EXCLUDED.transcript_summary,
                 deleted = FALSE, seq = items.seq + 1, updated_at = now()
             WHERE items.deleted
                OR (items.domain, items.title, items.creator_id, items.creator_name, items.genres,
                    items.mood_tags, items.duration_ms, items.release_date, items.explicit,
-                   items.available_regions, items.description)
+                   items.available_regions, items.description, items.transcript_summary)
                   IS DISTINCT FROM
                   (EXCLUDED.domain, EXCLUDED.title, EXCLUDED.creator_id, EXCLUDED.creator_name,
                    EXCLUDED.genres, EXCLUDED.mood_tags, EXCLUDED.duration_ms, EXCLUDED.release_date,
-                   EXCLUDED.explicit, EXCLUDED.available_regions, EXCLUDED.description)
+                   EXCLUDED.explicit, EXCLUDED.available_regions, EXCLUDED.description,
+                   EXCLUDED.transcript_summary)
             RETURNING *
             """)
         .param("id", i.itemId())
@@ -59,6 +63,31 @@ public class CatalogRepository {
         .param("explicit", i.explicit())
         .param("regions", i.availableRegions().toArray(String[]::new))
         .param("descr", i.description())
+        .param("transcript", i.transcriptSummary())
+        .query(CatalogRepository::map)
+        .optional();
+  }
+
+  /**
+   * Applies a newer enrichment version (no-op for the same or an older version, so retries and
+   * replays are idempotent). Bumps seq so the item is re-published and re-embedded.
+   */
+  public Optional<CatalogItemDto> applyEnrichment(String itemId, Enrichment e) {
+    return jdbc.sql(
+            """
+            UPDATE items SET enriched_moods = :moods, themes = :themes, topics = :topics, tone = :tone,
+                   reading_level = :level, enrichment_version = :version, seq = seq + 1, updated_at = now()
+            WHERE item_id = :id AND NOT deleted
+              AND (enrichment_version IS NULL OR enrichment_version < :version)
+            RETURNING *
+            """)
+        .param("id", itemId)
+        .param("moods", e.moods().toArray(String[]::new))
+        .param("themes", e.themes().toArray(String[]::new))
+        .param("topics", e.topics().toArray(String[]::new))
+        .param("tone", e.tone())
+        .param("level", e.readingLevel())
+        .param("version", e.version())
         .query(CatalogRepository::map)
         .optional();
   }
@@ -101,6 +130,11 @@ public class CatalogRepository {
     var rel = rs.getDate("release_date");
     long dur = rs.getLong("duration_ms");
     boolean durNull = rs.wasNull();
+    int ev = rs.getInt("enrichment_version");
+    Integer enrichmentVersion = rs.wasNull() ? null : ev;
+    List<String> curatedMoods = strings(rs.getArray("mood_tags"));
+    List<String> moods =
+        curatedMoods.isEmpty() ? strings(rs.getArray("enriched_moods")) : curatedMoods;
     return new CatalogItemDto(
         rs.getString("item_id"),
         rs.getString("domain"),
@@ -108,12 +142,18 @@ public class CatalogRepository {
         rs.getString("creator_id"),
         rs.getString("creator_name"),
         strings(rs.getArray("genres")),
-        strings(rs.getArray("mood_tags")),
+        moods,
         durNull ? null : dur,
         rel == null ? null : rel.toLocalDate(),
         rs.getBoolean("explicit"),
         strings(rs.getArray("available_regions")),
         rs.getString("description"),
+        rs.getString("transcript_summary"),
+        strings(rs.getArray("themes")),
+        strings(rs.getArray("topics")),
+        rs.getString("tone"),
+        rs.getString("reading_level"),
+        enrichmentVersion,
         rs.getLong("seq"),
         ts(rs.getTimestamp("created_at")),
         ts(rs.getTimestamp("updated_at")));

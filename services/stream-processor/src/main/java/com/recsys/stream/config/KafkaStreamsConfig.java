@@ -1,7 +1,8 @@
 package com.recsys.stream.config;
 
+import com.recsys.common.Topics;
 import com.recsys.stream.serde.StreamSerdes;
-import com.recsys.stream.signals.SignalWeigher;
+import com.recsys.stream.signals.SignalWeighers;
 import com.recsys.stream.topology.RecsTopology;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.binder.kafka.KafkaStreamsMetrics;
@@ -30,9 +31,10 @@ class KafkaStreamsConfig {
   Topology recsTopology(StreamProperties props, MeterRegistry registry) {
     return RecsTopology.build(
         props.topology(),
-        new SignalWeigher(props.songSignals()),
+        new SignalWeighers(props.signals()),
         new StreamSerdes(props.schemaRegistryUrl()),
-        new MicrometerOnlineMetrics(registry));
+        new MicrometerOnlineMetrics(registry),
+        props.embeddingsTopic() == null ? Topics.CATALOG_EMBEDDINGS : props.embeddingsTopic());
   }
 
   @Bean

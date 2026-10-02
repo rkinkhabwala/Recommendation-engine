@@ -12,7 +12,7 @@ final class Events {
   static Map<String, Object> event(
       UserProfile u,
       String session,
-      Song s,
+      Item s,
       String type,
       Double value,
       Instant ts,
@@ -24,7 +24,7 @@ final class Events {
     e.put("eventId", uuidV7(ts.toEpochMilli()));
     e.put("userId", u.userId());
     e.put("itemId", s.id());
-    e.put("domain", "song");
+    e.put("domain", s.domain());
     e.put("eventType", type);
     if (value != null) {
       e.put("value", value);
@@ -34,19 +34,33 @@ final class Events {
     Map<String, Object> ctx = new HashMap<>();
     ctx.put("device", u.device());
     ctx.put("country", u.country());
-    ctx.put("surface", recId == null ? "search" : "next_track");
+    ctx.put("surface", recId == null ? "search" : surface(s.domain()));
     ctx.put("autoplay", autoplay);
     e.put("context", ctx);
-    e.put(
-        "media",
-        Map.of(
-            "durationMs", s.durationMs(), "positionMs", value == null ? 0 : (long) (value * 1000)));
+    if (s.durationMs() != null) {
+      e.put(
+          "media",
+          Map.of(
+              "durationMs",
+              s.durationMs(),
+              "positionMs",
+              value == null ? 0 : (long) (value * 1000)));
+    }
     if (recId != null) {
       e.put("recommendationId", recId);
       e.put("position", pos);
       e.put("variantId", variant);
     }
     return e;
+  }
+
+  static String surface(String domain) {
+    return switch (domain) {
+      case "song" -> "next_track";
+      case "video" -> "related";
+      case "post" -> "feed";
+      default -> "home";
+    };
   }
 
   static String uuidV7(long millis) {

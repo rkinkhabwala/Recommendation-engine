@@ -53,17 +53,26 @@ class FeatureWriterListenerTest {
     byte[] lt =
         FeatureEnvelope.encode(
             1, 0, 0, new UserVector("u1", "items_mock_4_v1", new byte[8], "lt", 0));
-    listener.onBatch(List.of(rec(Topics.FEATURES_USER, RedisKeys.userLongTerm("u1"), lt)));
-    store.put(RedisKeys.userSeed("u1"), new UserVector("u1", "x", new byte[8], "seed", 0));
+    listener.onBatch(List.of(rec(Topics.FEATURES_USER, RedisKeys.userLongTerm("u1", "song"), lt)));
+    store.put(RedisKeys.userSeed("u1", "song"), new UserVector("u1", "x", new byte[8], "seed", 0));
 
     listener.onBatch(
         List.of(
-            rec(Topics.FEATURES_USER, RedisKeys.userShortTerm("u1"), null),
-            rec(Topics.FEATURES_USER, RedisKeys.userLongTerm("u1"), null)));
+            rec(Topics.FEATURES_USER, RedisKeys.userShortTerm("u1", "song"), null),
+            rec(Topics.FEATURES_USER, RedisKeys.userLongTerm("u1", "song"), null)));
 
-    assertThat(store.contains(RedisKeys.userLongTerm("u1"))).isFalse();
-    assertThat(store.contains(RedisKeys.userSeed("u1"))).isFalse(); // written by another service
-    listener.onBatch(List.of(rec(Topics.FEATURES_USER, RedisKeys.userLongTerm("u1"), lt)));
-    assertThat(store.contains(RedisKeys.userLongTerm("u1"))).isFalse();
+    assertThat(store.contains(RedisKeys.userLongTerm("u1", "song"))).isFalse();
+    assertThat(store.contains(RedisKeys.userSeed("u1", "song")))
+        .isFalse(); // written by another service
+    listener.onBatch(List.of(rec(Topics.FEATURES_USER, RedisKeys.userLongTerm("u1", "song"), lt)));
+    assertThat(store.contains(RedisKeys.userLongTerm("u1", "song"))).isFalse();
+  }
+
+  @Test
+  void freshnessIsTaggedPerFeatureType() {
+    assertThat(FeatureWriterListener.feature("u:{u1}:st:song")).isEqualTo("user_short_term");
+    assertThat(FeatureWriterListener.feature("u:{u1}:x")).isEqualTo("user_cross_domain");
+    assertThat(FeatureWriterListener.feature("i:{s1}:stat")).isEqualTo("item_stat");
+    assertThat(FeatureWriterListener.feature("expl:abc")).isEqualTo("explanation");
   }
 }

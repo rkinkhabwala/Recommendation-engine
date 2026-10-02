@@ -1,5 +1,6 @@
 package com.recsys.features;
 
+import com.recsys.features.model.Explanation;
 import com.recsys.features.model.ItemMeta;
 import com.recsys.features.model.ItemStats;
 import com.recsys.features.model.Neighbors;
@@ -122,15 +123,22 @@ public final class RedisFeatureStore implements FeatureReader, FeatureWriter {
   // ---------------------------------------------------------------- reads
 
   @Override
-  public UserFeatures user(String userId, Duration timeout) {
-    var st = hgetData(RedisKeys.userShortTerm(userId));
-    var lt = hgetData(RedisKeys.userLongTerm(userId));
-    var seed = hgetData(RedisKeys.userSeed(userId));
-    await(List.of(st, lt, seed), timeout);
+  public UserFeatures user(String userId, String domain, Duration timeout) {
+    var st = hgetData(RedisKeys.userShortTerm(userId, domain));
+    var lt = hgetData(RedisKeys.userLongTerm(userId, domain));
+    var seed = hgetData(RedisKeys.userSeed(userId, domain));
+    var x = hgetData(RedisKeys.userCrossDomain(userId));
+    await(List.of(st, lt, seed, x), timeout);
     return new UserFeatures(
         FeatureJson.read(st.join(), UserShortTerm.class),
         FeatureJson.read(lt.join(), UserVector.class),
-        FeatureJson.read(seed.join(), UserVector.class));
+        FeatureJson.read(seed.join(), UserVector.class),
+        FeatureJson.read(x.join(), UserVector.class));
+  }
+
+  @Override
+  public Map<String, Explanation> explanations(Collection<String> keys, Duration timeout) {
+    return readMany(keys, k -> k, Explanation.class, timeout);
   }
 
   @Override

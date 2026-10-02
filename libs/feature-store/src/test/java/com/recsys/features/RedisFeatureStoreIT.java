@@ -61,18 +61,21 @@ class RedisFeatureStoreIT {
   void deletedUserCannotBeResurrectedByReplay() throws Exception {
     String uid = "u_del";
     byte[] vec = FeatureJson.write(new UserVector(uid, "items_mock_4_v1", new byte[8], "lt", 1));
-    store.upsert(RedisKeys.userLongTerm(uid), 1, vec, 0).get();
-    store.upsert(RedisKeys.userSeed(uid), 1, vec, 0).get();
-    assertThat(store.user(uid, T).longTerm()).isNotNull();
+    store.upsert(RedisKeys.userLongTerm(uid, "song"), 1, vec, 0).get();
+    store.upsert(RedisKeys.userSeed(uid, "book"), 1, vec, 0).get();
+    assertThat(store.user(uid, "song", T).longTerm()).isNotNull();
 
     store.deleteUser(uid, Duration.ofDays(30)).get();
 
-    assertThat(store.user(uid, T).isEmpty()).isTrue();
-    assertThat(conn.sync().exists(RedisKeys.userLongTerm(uid), RedisKeys.userSeed(uid))).isZero();
+    assertThat(store.user(uid, "song", T).isEmpty()).isTrue();
+    assertThat(
+            conn.sync()
+                .exists(RedisKeys.userLongTerm(uid, "song"), RedisKeys.userSeed(uid, "book")))
+        .isZero();
     // A lagging replay of an old feature record must be refused.
-    assertThat(store.upsert(RedisKeys.userLongTerm(uid), 99, vec, 0).get())
+    assertThat(store.upsert(RedisKeys.userLongTerm(uid, "song"), 99, vec, 0).get())
         .isEqualTo(WriteResult.USER_DELETED);
-    assertThat(store.user(uid, T).isEmpty()).isTrue();
+    assertThat(store.user(uid, "song", T).isEmpty()).isTrue();
   }
 
   @Test

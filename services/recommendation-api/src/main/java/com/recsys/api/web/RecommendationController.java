@@ -20,14 +20,30 @@ import org.springframework.web.bind.annotation.RestController;
 public class RecommendationController {
   private static final Pattern ID = Pattern.compile("^[A-Za-z0-9_.:-]{1,64}$");
   private static final Pattern COUNTRY = Pattern.compile("^[A-Z]{2}$");
-  private static final Set<String> SURFACES = Set.of("home", "next_track", "radio");
+  private static final Set<String> SURFACES =
+      Set.of("home", "next_track", "radio", "feed", "related");
 
   private final RecommendationService service;
   private final ApiProperties props;
+  private final com.recsys.api.experiment.Experiments experiments;
 
-  public RecommendationController(RecommendationService service, ApiProperties props) {
+  public RecommendationController(
+      RecommendationService service,
+      ApiProperties props,
+      com.recsys.api.experiment.Experiments experiments) {
     this.service = service;
     this.props = props;
+    this.experiments = experiments;
+  }
+
+  /** Which variant (and ranker) a user gets in a domain; deterministic, for debugging/QA. */
+  @GetMapping("/v1/experiments/assignment")
+  public com.recsys.api.experiment.Experiments.Assignment assignment(
+      @RequestParam String userId, @RequestParam String domain) {
+    if (!ID.matcher(userId).matches()) {
+      throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_USER_ID", "invalid userId");
+    }
+    return experiments.assignment(domain, userId);
   }
 
   public record Item(
@@ -101,7 +117,7 @@ public class RecommendationController {
               result.recommendationId(),
               c.reason == null ? "POPULAR_FALLBACK" : c.reason.name(),
               c.seedItemId == null ? Map.of() : Map.of("seedItemId", c.seedItemId),
-              null, // TODO(phase-2): cached LLM "why this" explanation (read-only lookup)
+              c.explanation, // cached LLM sentence, or null → client renders the reason template
               c.explore));
     }
     var body =

@@ -11,11 +11,11 @@ import com.recsys.api.candidates.NextItemGenerator;
 import com.recsys.api.candidates.SemanticAnnGenerator;
 import com.recsys.api.candidates.TrendingGenerator;
 import com.recsys.api.core.RecommendationService;
-import com.recsys.api.experiment.Bucketer;
+import com.recsys.api.experiment.Experiments;
 import com.recsys.api.fallback.PopularCache;
 import com.recsys.api.hydration.Hydrator;
 import com.recsys.api.logging.ServedLogger;
-import com.recsys.api.ranking.HeuristicRanker;
+import com.recsys.api.ranking.RankerRegistry;
 import com.recsys.api.rerank.DiversityReRanker;
 import com.recsys.api.rerank.ExplorationReRanker;
 import com.recsys.api.rerank.FamiliarityCapReRanker;
@@ -162,7 +162,7 @@ class ServingConfig {
 
   @Bean
   PopularCache popularCache(FeatureReader features) {
-    return new PopularCache(features, "/fallback/static-popular-song.json");
+    return new PopularCache(features, "/fallback/static-popular-%s.json");
   }
 
   @Bean(destroyMethod = "close")
@@ -176,31 +176,44 @@ class ServingConfig {
   }
 
   @Bean
+  Experiments experiments(ApiProperties props) {
+    return new Experiments(props.experiments());
+  }
+
+  @Bean
+  RankerRegistry rankerRegistry(ApiProperties props, MeterRegistry registry) {
+    var r = new RankerRegistry(props.ranking().modelDir(), registry);
+    r.reload();
+    return r;
+  }
+
+  @Bean
   RecommendationService recommendationService(
       FeatureReader features,
       CandidateService candidates,
       Hydrator hydrator,
+      RankerRegistry rankers,
       PopularCache popular,
       ServedLogger servedLogger,
+      Experiments experiments,
       ApiProperties props,
       CircuitBreaker redisBreaker,
       MeterRegistry registry,
       Clock clock) {
-    var r = props.rerank();
     return new RecommendationService(
         features,
         candidates,
         hydrator,
-        new HeuristicRanker(),
+        rankers,
         List.of(
-            new HardFilterReRanker(r),
-            new FreshnessBoostReRanker(r),
-            new FamiliarityCapReRanker(r),
-            new DiversityReRanker(r),
-            new ExplorationReRanker(r)),
+            new HardFilterReRanker(),
+            new FreshnessBoostReRanker(),
+            new FamiliarityCapReRanker(),
+            new DiversityReRanker(),
+            new ExplorationReRanker()),
         popular,
         servedLogger,
-        new Bucketer(props.experiments().salt(), props.experiments().variants()),
+        experiments,
         props,
         redisBreaker,
         registry,

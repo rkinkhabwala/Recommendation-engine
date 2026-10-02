@@ -71,6 +71,27 @@ public class CatalogController {
     return ResponseEntity.accepted().body(new UpsertResponse(changed, unchanged, rejected));
   }
 
+  /** Called by the enrichment worker with validated LLM output. */
+  @org.springframework.web.bind.annotation.PatchMapping("/v1/catalog/items/{itemId}/enrichment")
+  public ResponseEntity<Map<String, Object>> enrich(
+      @PathVariable String itemId, @RequestBody Enrichment enrichment) {
+    String error = enrichment.validate();
+    if (error != null) {
+      throw new ApiException(HttpStatus.BAD_REQUEST, error, "invalid enrichment");
+    }
+    var stored = repository.applyEnrichment(itemId, enrichment);
+    if (stored.isEmpty()) {
+      return ResponseEntity.ok(Map.of("itemId", itemId, "applied", false)); // same/older version
+    }
+    try {
+      publisher.publish(stored.get());
+    } catch (Exception e) {
+      log.warn("Enrichment publish failed, deferring to reconciler: {}", e.toString());
+    }
+    return ResponseEntity.accepted()
+        .body(Map.of("itemId", itemId, "applied", true, "seq", stored.get().seq()));
+  }
+
   @GetMapping("/v1/catalog/items/{itemId}")
   public CatalogItemDto get(@PathVariable String itemId) {
     return repository

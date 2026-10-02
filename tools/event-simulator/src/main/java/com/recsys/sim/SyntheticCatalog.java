@@ -85,11 +85,13 @@ public final class SyntheticCatalog {
   };
   private static final List<String> REGIONS = List.of("US", "GB", "DE", "IN", "BR", "KR");
 
-  private final List<Song> songs;
-  private final Map<String, Song> byId = new HashMap<>();
-  private final Map<String, List<Song>> byGenre = new HashMap<>();
+  private final String domain;
+  private final List<Item> songs;
+  private final Map<String, Item> byId = new HashMap<>();
+  private final Map<String, List<Item>> byGenre = new HashMap<>();
 
   public SyntheticCatalog(int size, long seed, LocalDate today) {
+    this.domain = "song";
     Random r = new Random(seed);
     int artists = Math.max(20, size / 10);
     List<String[]> artistInfo = new ArrayList<>(); // id, name, primary, secondary
@@ -133,8 +135,9 @@ public final class SyntheticCatalog {
                   REGIONS.get(r.nextInt(REGIONS.size())), REGIONS.get(r.nextInt(REGIONS.size())));
       String title = ADJ[r.nextInt(ADJ.length)] + " " + NOUN[r.nextInt(NOUN.length)];
       double popularity = 1.0 / Math.pow(i + 1, 0.8);
-      Song s =
-          new Song(
+      Item s =
+          new Item(
+              "song",
               "s_%06d".formatted(i + 1),
               title,
               artist[0],
@@ -145,13 +148,160 @@ public final class SyntheticCatalog {
               release,
               explicit,
               regions.stream().distinct().toList(),
-              popularity);
+              popularity,
+              null);
       songs.add(s);
       byId.put(s.id(), s);
       for (String g : s.genres()) {
         byGenre.computeIfAbsent(g, k -> new ArrayList<>()).add(s);
       }
     }
+  }
+
+  private static final String[] BOOK_NOUNS = {
+    "History",
+    "Guide",
+    "Novel",
+    "Memoir",
+    "Chronicle",
+    "Story",
+    "Biography",
+    "Handbook",
+    "Journey",
+    "Legacy"
+  };
+  private static final String[] VIDEO_FORMATS = {
+    "live session",
+    "documentary",
+    "tutorial",
+    "behind the scenes",
+    "concert",
+    "interview",
+    "review",
+    "explainer"
+  };
+  private static final String[] POST_OPENERS = {
+    "Hot take:",
+    "Just discovered",
+    "Can we talk about",
+    "My favourite",
+    "Thread on",
+    "Quick thoughts on",
+    "Unpopular opinion about",
+    "Weekend plans with"
+  };
+
+  /**
+   * Books, videos and posts share the songs' genre vocabulary as topics, so items about "jazz" in
+   * every domain are close in the (shared) embedding space. Posts and half of the books ship
+   * without moods, which the LLM enrichment worker then fills in.
+   */
+  private SyntheticCatalog(String domain, int size, long seed, LocalDate today) {
+    this.domain = domain;
+    Random r = new Random(seed);
+    String prefix = domain.substring(0, 1);
+    int creators = Math.max(20, size / 8);
+    songs = new ArrayList<>(size);
+    for (int i = 0; i < size; i++) {
+      int c = zipfIndex(r, creators, 0.6);
+      String creatorId = prefix + "c_%05d".formatted(c + 1);
+      String genre = GENRES.get(new Random(seed * 31 + c).nextInt(GENRES.size()) % GENRES.size());
+      String second = r.nextDouble() < 0.3 ? GENRES.get(r.nextInt(GENRES.size())) : null;
+      List<String> genres =
+          second == null || second.equals(genre) ? List.of(genre) : List.of(genre, second);
+      List<String> pool = GENRE_MOODS.get(genre);
+      String mood = pool.get(r.nextInt(pool.size()));
+      String adj = ADJ[r.nextInt(ADJ.length)];
+      String noun = NOUN[r.nextInt(NOUN.length)];
+      String title;
+      String description;
+      Long duration = null;
+      List<String> moods;
+      String creatorName;
+      switch (domain) {
+        case "book" -> {
+          creatorName = "Author " + (c + 1);
+          title =
+              "The "
+                  + adj
+                  + " "
+                  + noun
+                  + ": A "
+                  + genre
+                  + " "
+                  + BOOK_NOUNS[r.nextInt(BOOK_NOUNS.length)];
+          description =
+              "A "
+                  + mood
+                  + " "
+                  + BOOK_NOUNS[r.nextInt(BOOK_NOUNS.length)].toLowerCase()
+                  + " about "
+                  + genre
+                  + " and the "
+                  + noun.toLowerCase()
+                  + " that shaped it. "
+                  + (second == null ? "" : "Touches on " + second + ".");
+          moods = r.nextDouble() < 0.5 ? List.of(mood) : List.of();
+        }
+        case "video" -> {
+          creatorName = "Channel " + (c + 1);
+          String format = VIDEO_FORMATS[r.nextInt(VIDEO_FORMATS.length)];
+          title = adj + " " + noun + " | " + genre + " " + format;
+          description =
+              "A " + mood + " " + genre + " " + format + " exploring " + noun.toLowerCase() + ".";
+          duration = 120_000L + r.nextInt(1_500_000);
+          moods = List.of(mood);
+        }
+        default -> {
+          creatorName = "Poster " + (c + 1);
+          title = genre + " post";
+          description =
+              POST_OPENERS[r.nextInt(POST_OPENERS.length)]
+                  + " "
+                  + genre
+                  + " "
+                  + noun.toLowerCase()
+                  + " tonight"
+                  + (second == null ? "" : ", plus some " + second)
+                  + ".";
+          moods = List.of(); // posts arrive unlabelled; enrichment adds moods/topics/tone
+        }
+      }
+      LocalDate release =
+          r.nextDouble() < 0.03
+              ? today.minusDays(r.nextInt(7))
+              : today.minusDays(7 + r.nextInt(domain.equals("post") ? 60 : 3000));
+      Item item =
+          new Item(
+              domain,
+              prefix + "_%06d".formatted(i + 1),
+              title,
+              creatorId,
+              creatorName,
+              genres,
+              moods,
+              duration,
+              release,
+              false,
+              List.of(),
+              1.0 / Math.pow(i + 1, 0.8),
+              description);
+      songs.add(item);
+      byId.put(item.id(), item);
+      for (String g : genres) {
+        byGenre.computeIfAbsent(g, k -> new ArrayList<>()).add(item);
+      }
+    }
+  }
+
+  public static SyntheticCatalog forDomain(String domain, int size, long seed, LocalDate today) {
+    return domain.equals("song")
+        ? new SyntheticCatalog(size, seed, today)
+        : new SyntheticCatalog(domain, size, seed + domain.hashCode(), today);
+  }
+
+  public String domain() {
+    return domain;
   }
 
   /** Index in [0, n) with P(k) ∝ 1/(k+1)^s. */
@@ -171,15 +321,15 @@ public final class SyntheticCatalog {
     return n - 1;
   }
 
-  public List<Song> songs() {
+  public List<Item> items() {
     return songs;
   }
 
-  public Song get(String id) {
+  public Item get(String id) {
     return byId.get(id);
   }
 
-  public List<Song> inGenre(String genre) {
+  public List<Item> inGenre(String genre) {
     return byGenre.getOrDefault(genre, List.of());
   }
 }

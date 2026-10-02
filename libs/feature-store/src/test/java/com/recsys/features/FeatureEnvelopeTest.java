@@ -24,8 +24,12 @@ class FeatureEnvelopeTest {
 
   @Test
   void userKeysShareHashTag() {
-    assertThat(RedisKeys.userShortTerm("u_9")).isEqualTo("u:{u_9}:st");
-    assertThat(RedisKeys.userIdOf("u:{u_9}:lt")).isEqualTo("u_9");
+    assertThat(RedisKeys.userShortTerm("u_9", "song")).isEqualTo("u:{u_9}:st:song");
+    assertThat(RedisKeys.userIdOf("u:{u_9}:lt:book")).isEqualTo("u_9");
+    assertThat(RedisKeys.allUserKeys("u_9")).hasSize(13).contains("u:{u_9}:x");
+    assertThat(RedisKeys.explanation("song", "LISTENED_TOGETHER", "s_1", "s_2"))
+        .startsWith("expl:")
+        .isEqualTo(RedisKeys.explanation("song", "LISTENED_TOGETHER", "s_1", "s_2"));
     assertThat(RedisKeys.userIdOf("i:{s_1}:stat")).isNull();
   }
 }

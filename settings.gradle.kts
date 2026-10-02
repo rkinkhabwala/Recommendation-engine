@@ -25,6 +25,7 @@ include(
   "services:catalog-service",
   "services:stream-processor",
   "services:embedding-worker",
+  "services:enrichment-worker",
   "services:recommendation-api",
   "tools:event-simulator",
 )

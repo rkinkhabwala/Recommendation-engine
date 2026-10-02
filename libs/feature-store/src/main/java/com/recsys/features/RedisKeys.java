@@ -1,5 +1,11 @@
 package com.recsys.features;
 
+import com.recsys.common.Domains;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 
 /**
@@ -9,16 +15,21 @@ import java.util.List;
 public final class RedisKeys {
   private RedisKeys() {}
 
-  public static String userShortTerm(String userId) {
-    return "u:{" + userId + "}:st";
+  public static String userShortTerm(String userId, String domain) {
+    return "u:{" + userId + "}:st:" + domain;
   }
 
-  public static String userLongTerm(String userId) {
-    return "u:{" + userId + "}:lt";
+  public static String userLongTerm(String userId, String domain) {
+    return "u:{" + userId + "}:lt:" + domain;
   }
 
-  public static String userSeed(String userId) {
-    return "u:{" + userId + "}:seed";
+  public static String userSeed(String userId, String domain) {
+    return "u:{" + userId + "}:seed:" + domain;
+  }
+
+  /** Cross-domain taste vector (all domains share one embedding space). */
+  public static String userCrossDomain(String userId) {
+    return "u:{" + userId + "}:x";
   }
 
   public static String userDeletedMarker(String userId) {
@@ -27,7 +38,14 @@ public final class RedisKeys {
 
   /** Every per-user key; deletion removes all of them. */
   public static List<String> allUserKeys(String userId) {
-    return List.of(userShortTerm(userId), userLongTerm(userId), userSeed(userId));
+    List<String> keys = new ArrayList<>();
+    for (String d : Domains.ALL) {
+      keys.add(userShortTerm(userId, d));
+      keys.add(userLongTerm(userId, d));
+      keys.add(userSeed(userId, d));
+    }
+    keys.add(userCrossDomain(userId));
+    return keys;
   }
 
   public static String itemStats(String itemId) {
@@ -48,6 +66,24 @@ public final class RedisKeys {
 
   public static String trending(String domain, String region) {
     return "trend:" + domain + ":" + region;
+  }
+
+  /**
+   * Cached "why this" explanation. Keyed by what the text depends on (never by user), so one
+   * generated sentence serves every user who gets the same recommendation for the same reason.
+   */
+  public static String explanation(
+      String domain, String reasonCode, String seedItemId, String itemId) {
+    try {
+      byte[] h =
+          MessageDigest.getInstance("SHA-256")
+              .digest(
+                  (domain + "|" + reasonCode + "|" + seedItemId + "|" + itemId)
+                      .getBytes(StandardCharsets.UTF_8));
+      return "expl:" + HexFormat.of().formatHex(h, 0, 12);
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException(e);
+    }
   }
 
   /** Extracts the user id from a user key, or null for non-user keys. */

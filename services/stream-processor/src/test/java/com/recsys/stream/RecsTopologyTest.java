@@ -25,8 +25,7 @@ import com.recsys.features.model.ScoredItem;
 import com.recsys.features.model.TrendingList;
 import com.recsys.features.model.UserShortTerm;
 import com.recsys.stream.serde.StreamSerdes;
-import com.recsys.stream.signals.SignalWeigher;
-import com.recsys.stream.signals.SignalWeights;
+import com.recsys.stream.signals.SignalWeighers;
 import com.recsys.stream.topology.OnlineMetrics;
 import com.recsys.stream.topology.RecsTopology;
 import com.recsys.stream.topology.TopologySettings;
@@ -88,15 +87,18 @@ class RecsTopologyTest {
         d.neighborTopK(),
         1.0, // min support 1 so a single session creates neighbours
         d.trendingTopN(),
-        d.affinityMaxEntries());
+        d.affinityMaxEntries(),
+        d.crossDomainHalfLife(),
+        Duration.ZERO, // emit the cross-domain vector on every update
+        d.consumedWindows(),
+        d.consumedMax());
   }
 
   @BeforeEach
   void setUp() throws Exception {
     StreamSerdes avro = new StreamSerdes("mock://recs-topology-test");
     var topology =
-        RecsTopology.build(
-            settings(), new SignalWeigher(SignalWeights.songDefaults()), avro, OnlineMetrics.NOOP);
+        RecsTopology.build(settings(), SignalWeighers.defaults(), avro, OnlineMetrics.NOOP);
     Properties p = new Properties();
     p.put(StreamsConfig.APPLICATION_ID_CONFIG, "recs-test");
     p.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "dummy:9092");
@@ -137,6 +139,13 @@ class RecsTopologyTest {
       items.pipeInput(id, catalog(id, song.get(1), song.get(2)), T0);
       embeddings.pipeInput(id, embedding(id, song.get(2).equals("jazz") ? JAZZ : ROCK), T0);
     }
+    // Other domains share the embedding space: a jazz-history book sits near jazz songs.
+    items.pipeInput("b_jazz", catalog("b_jazz", "author1", "jazz", Domain.BOOK), T0);
+    embeddings.pipeInput("b_jazz", embedding("b_jazz", JAZZ), T0);
+    items.pipeInput("v_rock", catalog("v_rock", "channel1", "rock", Domain.VIDEO), T0);
+    embeddings.pipeInput("v_rock", embedding("v_rock", ROCK), T0);
+    items.pipeInput("p_rock", catalog("p_rock", "poster1", "rock", Domain.POST), T0);
+    embeddings.pipeInput("p_rock", embedding("p_rock", ROCK), T0);
   }
 
   @AfterEach
@@ -145,9 +154,13 @@ class RecsTopologyTest {
   }
 
   static CatalogItem catalog(String id, String artist, String genre) {
+    return catalog(id, artist, genre, Domain.SONG);
+  }
+
+  static CatalogItem catalog(String id, String artist, String genre, Domain domain) {
     return CatalogItem.newBuilder()
         .setItemId(id)
-        .setDomain(Domain.SONG)
+        .setDomain(domain)
         .setTitle(id)
         .setCreatorId(artist)
         .setCreatorName(artist)
@@ -182,11 +195,24 @@ class RecsTopologyTest {
       Instant ts,
       String session,
       String recId) {
+    return event(eventId, user, item, type, value, ts, session, recId, Domain.SONG);
+  }
+
+  static UserEvent event(
+      String eventId,
+      String user,
+      String item,
+      EventType type,
+      Double value,
+      Instant ts,
+      String session,
+      String recId,
+      Domain domain) {
     return UserEvent.newBuilder()
         .setEventId(eventId)
         .setUserId(user)
         .setItemId(item)
-        .setDomain(Domain.SONG)
+        .setDomain(domain)
         .setEventType(type)
         .setValue(value)
         .setEventTs(ts)
@@ -202,6 +228,13 @@ class RecsTopologyTest {
     events.pipeInput(
         user,
         event(UUID.randomUUID().toString(), user, item, type, value, ts, "s-" + user, null),
+        ts);
+  }
+
+  void act(String user, String item, Domain domain, EventType type, Double value, Instant ts) {
+    events.pipeInput(
+        user,
+        event(UUID.randomUUID().toString(), user, item, type, value, ts, "s-" + user, null, domain),
         ts);
   }
 
@@ -224,11 +257,13 @@ class RecsTopologyTest {
     events.pipeInput("u1", e, T0.plusSeconds(11)); // client retry
 
     var out = userFeatures.readKeyValuesToList();
-    assertThat(out).extracting(kv -> kv.key).containsExactly("u:{u1}:st", "u:{u1}:lt");
+    assertThat(out)
+        .extracting(kv -> kv.key)
+        .containsExactly("u:{u1}:st:song", "u:{u1}:lt:song", "u:{u1}:x");
     UserShortTerm st = data(out.get(0).value, UserShortTerm.class);
     assertThat(Vectors.cosine(Vectors.fromFloat16(st.vector()), JAZZ)).isGreaterThan(0.99f);
     assertThat(st.indexVersion()).isEqualTo(INDEX);
-    assertThat(st.recentlyPlayed()).containsKey("j1");
+    assertThat(st.consumed()).containsKey("j1");
     assertThat(st.artistAffinity()).containsKey("a_jazz1");
     assertThat(FeatureEnvelope.decode(out.get(0).value).seq()).isEqualTo(1);
   }
@@ -240,7 +275,8 @@ class RecsTopologyTest {
     play("u2", "r1", EventType.SKIP, 4.0, T0.plusSeconds(3));
     play("u2", "r1", EventType.DISLIKE, null, T0.plusSeconds(4));
 
-    UserShortTerm st = last(userFeatures.readKeyValuesToList(), "u:{u2}:st", UserShortTerm.class);
+    UserShortTerm st =
+        last(userFeatures.readKeyValuesToList(), "u:{u2}:st:song", UserShortTerm.class);
     float[] v = Vectors.fromFloat16(st.vector());
     assertThat(Vectors.cosine(v, JAZZ)).isGreaterThan(Vectors.cosine(v, ROCK));
     assertThat(st.suppressedItems()).containsExactly("r1");
@@ -267,7 +303,8 @@ class RecsTopologyTest {
     play("u5", "j1", EventType.PLAY_START, null, T0.plus(Duration.ofHours(2)));
     play(
         "u5", "j2", EventType.LIKE, null, T0.plus(Duration.ofHours(1))); // out of order, within 24h
-    UserShortTerm st = last(userFeatures.readKeyValuesToList(), "u:{u5}:st", UserShortTerm.class);
+    UserShortTerm st =
+        last(userFeatures.readKeyValuesToList(), "u:{u5}:st:song", UserShortTerm.class);
     assertThat(st.liked()).containsExactly("j2");
     assertThat(st.recent())
         .extracting(r -> r.itemId())
@@ -306,6 +343,57 @@ class RecsTopologyTest {
     assertThat(next.items()).extracting(ScoredItem::itemId).containsExactly("j2");
     assertThat(co.items()).extracting(ScoredItem::itemId).containsExactly("j1");
     assertThat(last(out, RedisKeys.itemNext("j2"), Neighbors.class)).isNull(); // order matters
+  }
+
+  @Test
+  void crossDomainVectorTransfersTasteAndDomainsStaySeparate() {
+    act("u20", "b_jazz", Domain.BOOK, EventType.RATE, 5.0, T0.plusSeconds(1));
+    var out = userFeatures.readKeyValuesToList();
+    assertThat(out)
+        .extracting(kv -> kv.key)
+        .contains("u:{u20}:st:book", "u:{u20}:x")
+        .doesNotContain("u:{u20}:st:song");
+    var x = last(out, RedisKeys.userCrossDomain("u20"), com.recsys.features.model.UserVector.class);
+    // A 5-star jazz book makes jazz *songs* retrievable for a user with no song history.
+    assertThat(Vectors.cosine(Vectors.fromFloat16(x.vector()), JAZZ)).isGreaterThan(0.99f);
+  }
+
+  @Test
+  void consumedWindowsAreDomainSpecific() {
+    act("u21", "j1", Domain.SONG, EventType.PLAY_START, null, T0);
+    act("u21", "b_jazz", Domain.BOOK, EventType.CLICK, null, T0);
+    act("u21", "j2", Domain.SONG, EventType.PLAY_START, null, T0.plus(Duration.ofHours(3)));
+    act("u21", "p_rock", Domain.BOOK, EventType.SAVE, null, T0.plus(Duration.ofDays(40)));
+    var out = userFeatures.readKeyValuesToList();
+    // Songs are replayable: consumption expires after hours. Books are read once: kept for a year.
+    assertThat(last(out, "u:{u21}:st:song", UserShortTerm.class).consumed()).containsOnlyKeys("j2");
+    assertThat(last(out, "u:{u21}:st:book", UserShortTerm.class).consumed()).containsKey("b_jazz");
+  }
+
+  @Test
+  void postDwellAndVideoCompletionAreWeightedPerDomain() {
+    act("u22", "p_rock", Domain.POST, EventType.DWELL, 12.0, T0.plusSeconds(1));
+    act("u22", "v_rock", Domain.VIDEO, EventType.PLAY_END, 190.0, T0.plusSeconds(2));
+    var out = userFeatures.readKeyValuesToList();
+    assertThat(last(out, "u:{u22}:st:post", UserShortTerm.class).recent().get(0).weight())
+        .isEqualTo(0.3);
+    assertThat(last(out, "u:{u22}:st:video", UserShortTerm.class).recent().get(0).weight())
+        .isEqualTo(1.5);
+  }
+
+  @Test
+  void embeddingsTopicIsConfigurableForReEmbedding() {
+    var topology =
+        RecsTopology.build(
+            settings(),
+            SignalWeighers.defaults(),
+            new StreamSerdes("mock://x"),
+            OnlineMetrics.NOOP,
+            "catalog.embeddings.items_test_4_v2");
+    String described = topology.describe().toString();
+    assertThat(described)
+        .contains("catalog.embeddings.items_test_4_v2")
+        .doesNotContain("[catalog.embeddings.v1]");
   }
 
   @Test

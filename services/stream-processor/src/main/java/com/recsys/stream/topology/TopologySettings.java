@@ -1,10 +1,11 @@
 package com.recsys.stream.topology;
 
 import java.time.Duration;
+import java.util.Map;
 
 /**
- * Tunables of the feature topology. Emission intervals of zero mean "emit on every update" (used by
- * tests).
+ * Tunables of the feature topology. {@code recentlyPlayedWindow} is the default consumed window.
+ * Emission intervals of zero mean "emit on every update" (used by tests).
  */
 public record TopologySettings(
     String indexVersion,
@@ -30,7 +31,18 @@ public record TopologySettings(
     int neighborTopK,
     double neighborMinSupport,
     int trendingTopN,
-    int affinityMaxEntries) {
+    int affinityMaxEntries,
+    Duration crossDomainHalfLife,
+    Duration crossDomainEmitInterval,
+    Map<String, Duration> consumedWindows,
+    int consumedMax) {
+
+  /** How long consumption hides an item, per domain (songs replay; books are read once). */
+  public Duration consumedWindow(String domain) {
+    return consumedWindows == null
+        ? recentlyPlayedWindow
+        : consumedWindows.getOrDefault(domain, recentlyPlayedWindow);
+  }
 
   public static TopologySettings defaults(String indexVersion) {
     return new TopologySettings(
@@ -57,6 +69,14 @@ public record TopologySettings(
         50,
         2.0,
         500,
-        50);
+        50,
+        Duration.ofDays(7),
+        Duration.ofSeconds(1),
+        Map.of(
+            "song", Duration.ofHours(2),
+            "video", Duration.ofDays(30),
+            "book", Duration.ofDays(365),
+            "post", Duration.ofDays(30)),
+        500);
   }
 }

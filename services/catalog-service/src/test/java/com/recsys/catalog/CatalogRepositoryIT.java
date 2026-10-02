@@ -43,7 +43,13 @@ class CatalogRepositoryIT {
         LocalDate.of(2026, 9, 1),
         false,
         List.of(),
-        null,
+        null, // description
+        null, // transcript summary
+        null, // themes
+        null, // topics
+        null, // tone
+        null, // reading level
+        null, // enrichment version
         null,
         null,
         null);
@@ -71,5 +77,23 @@ class CatalogRepositoryIT {
     assertThat(repo.find("s_pub")).isEmpty();
     assertThat(repo.unpublished(100))
         .anyMatch(u -> u.item().itemId().equals("s_pub") && u.deleted());
+  }
+
+  @Test
+  void enrichmentIsIdempotentAndSurvivesCatalogReloads() {
+    repo.upsert(song("s_enr", "Quiet Night")).orElseThrow();
+    var e =
+        new Enrichment(
+            1, List.of("calm"), List.of("solitude"), List.of("night"), "reflective", null);
+    var enriched = repo.applyEnrichment("s_enr", e).orElseThrow();
+    assertThat(enriched.themes()).containsExactly("solitude");
+    assertThat(repo.applyEnrichment("s_enr", e)).isEmpty(); // same version: no-op
+
+    // A reload of curated data does not wipe enrichment nor create a new version.
+    assertThat(repo.upsert(song("s_enr", "Quiet Night"))).isEmpty();
+    var found = repo.find("s_enr").orElseThrow();
+    assertThat(found.themes()).containsExactly("solitude");
+    assertThat(found.moods()).containsExactly("mellow"); // curated moods win over enriched
+    assertThat(found.enrichmentVersion()).isEqualTo(1);
   }
 }

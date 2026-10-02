@@ -1,0 +1,68 @@
+server:
+  port: 8086
+spring:
+  application:
+    name: enrichment-worker
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+    consumer:
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
+      max-poll-records: 50
+      properties:
+        schema.registry.url: ${SCHEMA_REGISTRY_URL:http://localhost:8085}
+        specific.avro.reader: true
+        max.poll.interval.ms: 900000
+    listener:
+      type: batch
+      concurrency: 3
+recs:
+  redis:
+    uri: ${REDIS_URI:redis://localhost:6379}
+  enrichment:
+    version: 1
+    domains: [song, book, video, post]
+    catalog-url: ${CATALOG_URL:http://localhost:8082}
+    api-key: ${RECS_API_KEY:dev-key}
+    explanation-sample-percent: ${RECS_EXPLANATION_SAMPLE_PERCENT:20}
+    explanation-top-n: 3
+    explanation-ttl: 30d
+    max-items-per-second: ${RECS_ENRICHMENT_MAX_PER_SECOND:50}
+  openai:
+    mode: ${RECS_OPENAI_MODE:mock}
+    base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
+    api-key: ${OPENAI_API_KEY:}
+    # Required by settings validation even though this worker only chats.
+    embedding-model: ${RECS_EMBEDDING_MODEL:text-embedding-3-small}
+    dimensions: ${RECS_EMBEDDING_DIMS:512}
+    # Configurable; verify the current model name and its pricing before enabling openai mode.
+    chat-model: ${RECS_CHAT_MODEL:gpt-5-mini}
+    timeout: 30s
+    max-attempts: 4
+    initial-backoff: 1s
+    requests-per-minute: 300
+    monthly-budget-usd: ${RECS_OPENAI_MONTHLY_BUDGET_USD:50}
+    price-per-million-tokens:
+      # Verify against current OpenAI pricing (USD per 1M tokens).
+      gpt-5-mini: 0.25
+      "[gpt-5-mini:output]": 2.0
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+logging:
+  structured:
+    format:
+      console: ${LOG_FORMAT:ecs}

@@ -31,7 +31,8 @@ recs:
     # Collection name encodes model + dims; must match recs.openai.* below.
     index-version: ${RECS_INDEX_VERSION:items_mock_512_v1}
     alias: items_current
-    template-version: song-v1
+    template-version: v2
+    embeddings-topic: ${RECS_EMBEDDINGS_TOPIC:catalog.embeddings.v1}
     embed-batch-size: 100
     qdrant-host: ${QDRANT_HOST:localhost}
     qdrant-port: ${QDRANT_GRPC_PORT:6334}

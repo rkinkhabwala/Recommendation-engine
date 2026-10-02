@@ -1,6 +1,6 @@
 # Real-time Recommendation System: Architecture (Phase 0)
 
-Status: **draft for review** · Scope: all four domains designed, **songs** built first (Phase 1).
+Status: Phases 1 and 2 implemented, awaiting review. Scope: songs, books, videos and posts.
 Plain-language version: [`../architecture.md`](../architecture.md).
 
 ---
@@ -10,12 +10,12 @@ Plain-language version: [`../architecture.md`](../architecture.md).
 | Area | Decision |
 |---|---|
 | Scale (prod design) | 1M DAU, ~50K events/s peak, 5M items across domains |
-| Scale (Phase 1 local) | ~500 events/s, 50K-song synthetic catalog, ~10K synthetic users |
+| Scale (local) | ~400 events/s; Phase 1: 50K songs. Phase 2: 90K items (50K songs, 10K books, 10K videos, 20K posts), ~4K simulated users |
 | Serving latency | **p50 < 30 ms, p99 < 100 ms** at the API edge (excludes client network) |
 | Freshness | User action reflected in recommendations **< 5 s** (measured as event `received_ts` → feature committed in Redis) |
 | Region | Single AWS region; multi-region is out of scope |
 | Auth | Gateway authenticates and passes `user_id`. MVP uses an API key. `TODO(phase-3)`: JWT |
-| Embeddings | `text-embedding-3-small`, `dimensions=512` (configurable). `TODO(phase-2)`: benchmark 512 vs 1536 recall@K |
+| Embeddings | `text-embedding-3-small`, `dimensions=512` (configurable). `ml/recsys_ml/bench_embedding_dims.py` measures 512 vs 1536 next-item recall@K. It needs `OPENAI_API_KEY`, and hasn't been run in mock mode |
 | OpenAI budget | Dev: $50/month, alerts at 50% ($25) and 80% ($40) |
 | Deletion SLA | All of a user's data purged from every store within **30 days** |
 | Phase 1 song embedding text | title + artist + genres + mood tags. **No lyrics.** |
@@ -79,30 +79,29 @@ flowchart LR
   subgraph openai[Async OpenAI pipeline - never on the serving path]
     EW[embedding-worker<br/>content hash, micro-batch<br/>retry, breaker, rate limit]
     BF[backfill / re-embed job<br/>OpenAI Batch API]
-    ENR[enrichment-worker<br/>structured outputs - phase 2]
-    EXPL[explanation-worker - phase 2]
+    ENR[enrichment-worker<br/>metadata: structured outputs<br/>explanations: cached, user-agnostic]
     OAI{{OpenAI API}}
   end
   T_CAT --> EW
   T_ONB --> EW
+  T_CAT --> ENR
+  T_SRV -->|sampled top items| ENR
   EW <--> OAI
   BF <--> OAI
   ENR <--> OAI
-  EXPL <--> OAI
   EW --> QD[(Qdrant<br/>alias items_current)]
   EW --> T_EMB
-  EW -->|onboarding seed vector| REDIS
+  EW -->|onboarding seed vectors| T_FEAT
   EW -.->|non-retryable| T_DLQ
   BF --> QD
-  ENR --> PG
-  ENR -.->|metadata changed| T_CAT
-  EXPL --> REDIS
+  ENR -->|PATCH enrichment| CAT
+  ENR -->|explanation texts| T_FEAT
 
   subgraph serve[recommendation-api - Spring MVC, virtual threads]
-    CG[Candidate generators in parallel<br/>ANN, item-item CF, next-item, trending]
-    RK[Ranker<br/>heuristic, later LightGBM]
-    RR[Re-rankers<br/>filters, diversity, freshness, exploration]
-    FB[Fallback ladder]
+    CG[Candidate generators in parallel<br/>ANN, new items, item-item CF, next-item, trending]
+    RK[Ranker per A/B variant<br/>heuristic or LightGBM]
+    RR[Re-rankers per domain<br/>filters, diversity, freshness, exploration]
+    FB[Fallback ladder + cached explanations]
   end
   GW -->|GET /v1/recommendations| CG
   REDIS --> CG
@@ -111,15 +110,19 @@ flowchart LR
   FB -->|response| GW
   RR -.->|async, non-blocking| T_SRV
 
-  subgraph offline[Offline - phase 2]
-    S3[(S3 Parquet<br/>events, served, attributed)]
-    ML[ml/ training and eval<br/>Python, uv]
+  subgraph offline[Offline ML - ml/ Python]
+    PQ[(Parquet<br/>served, attributed, catalog<br/>pseudonymized users)]
+    TR[train: LightGBM LambdaRank<br/>offline eval + promotion gate]
+    REG[(model registry<br/>ranker/domain/version)]
+    AB[A/B report<br/>CIs, z-tests, SRM]
   end
-  T_EV -.-> S3
-  T_SRV -.-> S3
-  T_ATTR -.-> S3
-  S3 -.-> ML
-  ML -.->|versioned model artifact| RK
+  T_SRV -.->|recsys-export| PQ
+  T_ATTR -.-> PQ
+  T_CAT -.-> PQ
+  PQ -.-> TR
+  PQ -.-> AB
+  TR -.->|promote current| REG
+  REG -.->|hot reload| RK
 ```
 
 ### Serving request path and latency budget
@@ -220,7 +223,7 @@ Operational settings: `num.standby.replicas=1`, static group membership, and Roc
 - Exports catalog → JSONL → **OpenAI Batch API** (cheaper, async) → polls → bulk upserts into a **new** collection.
 - Swapping the embedding model or dims, with no downtime:
   1. Create `items_<model>_<dims>_v<n+1>`.
-  2. Dual-write new items to both collections. Embedding records for the new index go to a separate topic, `catalog.embeddings.<index>`. A compacted topic keyed by `item_id` keeps only one version per item, so both indexes cannot share it. `TODO(phase-2)`: the backfill job.
+  2. Dual-write new items to both collections. Embedding records for the new index go to a separate topic, `catalog.embeddings.<index>`. A compacted topic keyed by `item_id` keeps only one version per item, so both indexes cannot share it. The backfill job is implemented (§17).
   3. Backfill the new collection.
   4. Validate: count parity, plus recall@K on a holdout of attributed sessions.
   5. Build user vectors in the new space with a shadow topology that replays the 7 d of raw events.
@@ -252,14 +255,14 @@ score = 0.30·sim_short + 0.15·sim_long + 0.15·cf + 0.10·next_item
       + 0.07·completion_rate + 0.05·freshness(release-age decay)
       − penalties(recent negative on same artist, recently skipped)
 ```
-`TODO(phase-2)`: `LightGbmRanker` behind the same interface. Served features are sampled into `recs.served.v1` to avoid training/serving skew.
+Phase 2 adds `LightGbmRanker` behind the same interface (§15). Both rankers share `FeatureExtractor`, and those exact values are sampled into `recs.served.v1`, so training and serving use identical features.
 
 **Re-ranker chain (in order).**
 1. **Hard filters:** recently played (2 h), disliked, `not_interested` items and artists, explicit content when disallowed, region-unavailable.
 2. **Diversity:** greedy selection, at most 1 track per artist in any window of 3 positions and at most 2 per artist per 10. Light genre MMR (λ = 0.8). The "no 5 in a row" requirement is a strict subset of this.
 3. **Freshness boost:** items released < 14 d get a capped multiplicative boost.
 4. **Familiarity cap:** ≤ 30% previously liked tracks.
-5. **Exploration:** ε = 0.08 of slots (min 1 when `limit ≥ 8`), never position 0 on `next_track`. Slots are filled from a pool of new or low-impression items matching the user's top genres. Each one carries `explore=true` and its selection propensity, for unbiased offline evaluation. `TODO(phase-2)`: Thompson sampling on per-item Beta(play, skip) posteriors.
+5. **Exploration:** ε = 0.08 of slots (min 1 when `limit ≥ 8`), never position 0 on `next_track`. Slots are filled from a pool of new or low-impression items matching the user's top genres. Each one carries `explore=true` and its selection propensity, for unbiased offline evaluation. Thompson sampling is implemented in Phase 2 (§16).
 
 **Fallback ladder.** Each response reports `fallbackLevel`. The API never returns 5xx for a dependency failure.
 
@@ -301,7 +304,7 @@ Circuit breakers on Redis and Qdrant short-circuit straight to the right level, 
 
 ## 5. Signal weights
 
-Weights are config (`recs.signals.<domain>`), applied in the stream processor. Phase 1 builds songs. The other tables are preliminary for Phase 2. `TODO(phase-2)`: fit weights by regressing on downstream outcomes (7-day return, session length).
+Weights are config (`recs.signals.<domain>`), applied in the stream processor. All four domains are implemented. `TODO(phase-3)`: fit weights by regressing on downstream outcomes (7-day return, session length).
 
 ### Songs (Phase 1)
 | Signal | Weight | Rationale |
@@ -323,12 +326,17 @@ Weights are config (`recs.signals.<domain>`), applied in the stream processor. P
 
 A skip after 30 s that ends before 50% scores 0, because it is ambiguous. A skip after 50% scores +0.2, since the listener heard most of the track. Negative contributions to a user vector are capped at a total of −30% of the positive mass, so a skip spree cannot flip the vector.
 
-### Other domains (preliminary, Phase 2)
+### Other domains (implemented in Phase 2; see `recs.stream.signals.*`)
 | Domain | Strong + | Moderate + | Negative |
 |---|---|---|---|
-| Videos | completion ≥ 90% (+1.5), share (+1.5), like (+1.2) | watch ≥ 30 s or ≥ 25% (+0.5) | abandon < 10% (−0.5), dislike (−2.0), not interested (−3.0) |
-| Books | rating ≥ 4 (+2.0), save/want-to-read (+1.2) | detail dwell ≥ 20 s (+0.3), click (+0.2) | rating ≤ 2 (−1.5), not interested (−3.0) |
-| Posts | comment (+1.5), share (+1.5), save (+1.2), like (+0.8) | dwell ≥ 5 s (+0.3) | hide / not interested (−3.0), fast scroll-past (−0.05) |
+| Videos | completion ≥ 90% (+1.5), share (+1.5), like/save (+1.2), comment (+1.0) | watch ≥ 30 s or ≥ 25% (+0.5) | abandon < 10% (−0.5), skip < 10 s (−0.5), dislike (−2.0), not interested (−3.0) |
+| Books | rating: (stars − 3) × 1.0, so 5★ = +2, 4★ = +1; save/want-to-read (+1.2); share (+1.2) | like (+1.0), detail dwell ≥ 20 s (+0.3), click (+0.2) | 2★ = −1, 1★ = −2, dislike (−1.5), not interested (−3.0) |
+| Posts | comment (+1.5), share (+1.5), save (+1.2), like (+0.8) | dwell ≥ 5 s (+0.3), click (+0.2) | not interested (−3.0), dislike (−1.5), scroll-past < 1 s (−0.05) |
+
+Why these differ by domain:
+- **Videos** are long, so completion is rare and strongly positive, and abandoning in the first 10% is the clearest negative.
+- **Books** are rarely finished inside the product, so an explicit rating dominates. A save (want-to-read) is stronger than a click.
+- **Posts** are skimmed. Active engagement (comment, share) beats a passive like. A scroll-past is only a very weak negative, because most of a feed is scrolled past.
 
 ---
 
@@ -447,7 +455,10 @@ All endpoints are versioned under `/v1`. They take `X-Api-Key` (MVP), propagate 
 }
 ```
 - `reasonCode` is one of `SIMILAR_TO_RECENT`, `SIMILAR_TO_TASTE`, `LISTENED_TOGETHER`, `OFTEN_PLAYED_NEXT`, `TRENDING`, `POPULAR_IN_REGION`, `NEW_FOR_YOU` (exploration), `ONBOARDING_MATCH`, `POPULAR_FALLBACK`.
-- `explanation` is a cached LLM sentence (Phase 2), otherwise null. The client renders a template from the reason code.
+- `explanation` is a cached LLM sentence (§10), otherwise null, in which case the client renders a template from the reason code.
+- `reasonCode` also includes `CROSS_DOMAIN`: the user is new to this domain, and their taste in other domains drove retrieval.
+- `context`: `home`, `next_track`, `radio`, `feed` (posts) or `related` (videos).
+- `GET /v1/experiments/assignment?userId=&domain=` returns `{variantId, bucket, ranker}` for QA.
 - `Cache-Control: no-store`.
 
 ### Others
@@ -480,10 +491,22 @@ A daily job marks a `deletion_requests` row complete once its longest bound (S3 
 
 ---
 
-## 10. Async LLM enrichment (Phase 2, designed now)
-- **Metadata enrichment:** for items missing mood, themes or topics, `enrichment-worker` calls the configured GPT model with **structured outputs** (a JSON schema with enum-constrained moods and themes). Each response is validated against the schema and whitelist and stored in Postgres with `enrichment_version`. It re-emits `catalog.items.v1`, which changes the content hash and triggers a re-embed. Invalid responses are retried once, then sent to the DLQ.
-- **"Why this" explanations:** sampled from the top 3 positions of `recs.served.v1`. Generated per `(reason_code, seed_item_id, item_id)`, which is shared across users, so there is no user data in the prompt and the cache is reused. Stored at `expl:{hash}` with a 30 d TTL. Serving reads the cache only.
-- **LLM re-ranking:** async batch only (e.g. the daily "books for you" email) over ≤ 50 candidates. Never used for feeds.
+## 10. Async LLM enrichment and explanations (Phase 2)
+`services/enrichment-worker` runs two Kafka listeners. Both are `NON_ESSENTIAL` jobs, so the budget guard pauses them at 100% of the monthly budget. Both use a deterministic mock LLM in `mock` mode.
+
+- **Metadata enrichment** (`item-enricher`, consumes `catalog.items.v1`):
+  - Runs for items missing moods, themes or topics whose `enrichment_version` is older than the configured version.
+  - Sends only item content (title, creator, genres, curated moods, description, transcript summary) to the configured chat model, using **structured outputs**: a strict JSON schema where moods, tone and reading level come from closed enums, and themes and topics are at most 5 tags each.
+  - The output is **re-validated** against the vocabularies, plus tag hygiene: lowercase, ≤ 40 chars, no URLs, emails or handles. It is then written through `PATCH /v1/catalog/items/{id}/enrichment` on catalog-service, the catalog's only writer.
+  - That endpoint is idempotent by version. Enriched values live in separate columns, so a catalog reload never wipes them, and curated values always win.
+  - The item's seq is bumped, so it is re-published and re-embedded. The v2 embedding templates include themes and topics, so retrieval improves too.
+  - Bad input (a refusal) is skipped. Outages pause the consumer with backoff.
+- **"Why this" explanations** (`explainer`, consumes `recs.served.v1`):
+  - Takes a deterministic sample of served lists (20% locally) and their top 3 items.
+  - Keys are `expl:{sha256(domain|reason|seed|item)}`, never the user, so one sentence serves everyone who gets that recommendation for that reason, and the prompt contains no user data.
+  - The output is validated (single line, ≤ 160 chars, no links), then published to `features.item.v1` with a 30-day TTL, which the feature-writer applies to Redis. Redis therefore stays rebuildable.
+  - Serving reads the cache with a 5 ms budget and never waits for generation.
+- **LLM re-ranking:** async batch only (for example a daily "books for you" email) over ≤ 50 candidates. Never used for feeds. `TODO(phase-3)`: not built.
 
 ## 11. Observability
 - **Metrics:**
@@ -500,9 +523,12 @@ A daily job marks a `deletion_requests` row complete once its longest bound (S3 
 - **Logs:** Spring Boot structured JSON with `trace_id`, `user_id`, `recommendation_id`.
 - **Alerts:** p99 > 100 ms for 5 min; freshness p95 > 5 s; consumer lag growing; fallback rate > 2%; OpenAI budget at 50% / 80%.
 
-## 12. Evaluation (hooks built in Phase 1, used in Phase 2)
-- **Offline:** precision@K, recall@K, NDCG, coverage, intra-list diversity and novelty. Computed on attributed sessions, with replay by time-split. Exploration propensities enable IPS-weighted estimates.
-- **Online:** CTR, completion rate, skip rate, session length and return rate, per `variant_id`.
+## 12. Evaluation
+- **Offline** (`ml/recsys_ml/metrics.py`, `train.py`):
+  - Metrics: NDCG@10, precision@5, recall@5, coverage@5, intra-list diversity@5 (share of distinct creators) and novelty@5 (mean −log2 popularity).
+  - Computed on a later time slice (split by group, so nothing leaks across the split), comparing the model's order with the logged serving order.
+  - Exploration propensities are logged for IPS estimates. `TODO(phase-3)`: an IPS/SNIPS estimator.
+- **Online:** `recs_online_outcomes_total` and `recs_online_served_items_total` by domain, variant and outcome (Prometheus). `ml/recsys_ml/ab_report.py` adds CTR, completion, early-skip and like rates per variant, with 95% CIs, two-proportion z-tests against control, and a sample-ratio-mismatch check.
 
 ---
 
@@ -527,4 +553,85 @@ A daily job marks a `deletion_requests` row complete once its longest bound (S3 
 | R15 | Cold start quality | Onboarding seed vector, popular-in-region, new items embedded on ingest and eligible for exploration within seconds |
 | R16 | Kafka storage cost at prod scale (~36 TB) | 7 d retention, compression (zstd), `TODO(phase-3)` tiered storage |
 | R17 | JVMs sizing their heap from the host instead of the container (seen locally as OOM kills and multi-second GC stalls) | Every container has a memory limit. JVMs use `MaxRAMPercentage=60` (40 for the stream processor, which needs room for RocksDB), capped direct memory, G1, and exit on OOM. RocksDB uses a bounded shared block cache. `TODO(phase-3)`: requests/limits in K8s from load-test profiles |
+| R19 | An enrichment or template rollout mass re-embeds the catalog, and the Qdrant re-index storm hurts serving (seen locally: Qdrant at 660% CPU, about 2% client timeouts) | The enricher is throttled (`max-items-per-second`). Bulk rollouts go through the backfill job into a new index plus an alias switch, not in-place upserts. `TODO(phase-3)`: Qdrant optimizer settings and a dedicated indexing node |
+| R20 | The LLM produces wrong or unsafe metadata | Strict schemas with closed vocabularies, re-validation (tags, lengths, no URLs or handles), curated values always win, enrichment is versioned and idempotent. Explanations are user-agnostic, length-capped and link-free |
+| R21 | A learned ranker regresses quality, or offline evaluation is misleading because logged clicks are position-biased | Two-stage gate: a position-free offline quality check, then an online A/B with confidence intervals and an SRM check. Promotion is an explicit pointer flip, and rollback means pointing back to the previous version. Missing or invalid models fall back to the heuristic, visibly |
+| R22 | Training/serving skew | One `FeatureExtractor` computes the features both rankers use. The same values are logged, and the registry refuses models whose feature list differs |
 | R18 | Per-request allocation on the hot path causing GC pauses | Ranking features are built only for the sampled 5% of requests that get logged. Search payloads are trimmed. Rescore is capped at 150 ids. Verified with k6 at 200 req/s: p50 2.5 ms, p99 27 ms, longest GC pause 13 ms |
+
+---
+
+## 14. Multi-domain and cross-domain signals (Phase 2)
+- **Per-domain everything that differs; shared everything that doesn't.**
+  - Per domain: signal weights (§5), consumed windows (song 2 h, video and post 30 d, book 365 d), re-rank rules (creator diversity windows, familiarity cap, freshness boost; posts favour recency), embedding templates, A/B experiments, trained rankers and static fallback lists.
+  - Shared: the event schema, the pipeline, the feature store, the candidate generators and the serving code.
+- **User state:** one `UserState` per user with a `DomainState` per domain. Redis keys are `u:{id}:st:<domain>`, `u:{id}:lt:<domain>` and `u:{id}:seed:<domain>`, plus `u:{id}:x`. Co-engagement (i2i, next-item) is computed within a domain's session.
+- **Cross-domain signals:**
+  - Every domain is embedded into one space, and the templates share topic vocabulary.
+  - The stream processor keeps a cross-domain taste vector `u:{id}:x` (7 d half-life over all domains' engagement).
+  - Serving queries ANN with `0.6·short + 0.25·long + 0.15·cross` (renormalized) for users with in-domain history.
+  - For users new to a domain it queries with the cross-domain vector (blended with the onboarding seed, if any), and marks those items with reason `CROSS_DOMAIN`.
+  - Verified: a user who only rated a jazz book gets jazz songs (`RecsTopologyTest`, `RecommendationServiceTest`).
+- **Item statistics** classify starts per domain: play for songs and videos, click for books, engaged dwell for posts. Trending therefore works for every domain.
+
+## 15. Learned ranking: training pipeline and model versioning (Phase 2)
+
+```mermaid
+flowchart LR
+  API[recommendation-api] -->|recs.served.v1<br/>sampled features| K[(Kafka)]
+  SP[stream-processor] -->|recs.attributed.v1<br/>IMPRESSED, PLAYED, ...| K
+  K -->|recsys-export<br/>HMAC user ids| PQ[(Parquet)]
+  PQ -->|recsys-train| GATE{offline gate}
+  GATE -->|quality AUC ≥ heuristic| CAND[candidate pointer]
+  GATE -->|IPS-NDCG ≥ logged order| CUR[current pointer]
+  CAND -->|A/B treatment| API
+  CUR -->|all lightgbm variants| API
+  AB[recsys-ab-report] -->|win| PROMOTE[recsys-promote → current]
+```
+
+- **Features:** `FeatureExtractor` (semantic, cf, next, affinity, trending, ctr, completion, freshness, penalty). It is shared by both rankers. Sampled requests log exactly these values on `recs.served.v1`, at 5% in production and 50% locally.
+- **Labels:**
+  - Each served item takes the maximum grade over its attributed outcomes: SAVED 4, LIKED 3, COMPLETED 2, PLAYED 1, IMPRESSED/SKIPPED_EARLY/DISLIKED 0.
+  - Exposure comes from `IMPRESSED` outcomes, which the client sends for visible slots.
+  - Groups are `recommendation_id`s, and groups without a positive are dropped.
+- **Model:**
+  - LightGBM LambdaRank, one model per domain, split by time and by group.
+  - The served position is a training feature, to absorb position bias, and is fixed to 0 at inference.
+- **Gating:** two stages, because logged clicks favour the policy that produced them.
+  - Single-click surfaces have one positive per list, so IPS cancels out of NDCG and offline replay cannot judge a new ranking.
+  - Candidate gate (position-free): among engaged items, AUC of model score vs logged heuristic score for good outcomes (≥ COMPLETED/LIKED) vs poor ones.
+  - Auto-promotion to `current`: requires IPS-weighted NDCG@5 at or above the logged order as well.
+- **Registry:** `ml/models/ranker/<domain>/<version>/{model.json, metadata.json}` with `candidate` and `current` pointers, flipped by atomic rename. `metadata.json` records the features, parameters, data window, label distribution, offline metrics and feature importance.
+- **Serving:**
+  - The registry polls every 30 s and hot-swaps.
+  - LightGBM's JSON dump is scored by a **pure-Java evaluator**, with no native code on the hot path. Its output matches LightGBM to within 1e-9 (`LightGbmModelTest`, with a fixture from `ml/scripts/make_parity_fixture.py`).
+  - Variants choose `heuristic`, `lightgbm` (current) or `lightgbm:candidate`.
+  - A missing or mismatched model falls back to the heuristic. The served `ranker_version` shows which ranker actually ran.
+- **Rollback:** point `current` (or `candidate`) back at the previous version with `recsys-promote`. Versions are immutable.
+- `TODO(phase-3)`: an object-store registry with approvals, scheduled retraining, an IPS/SNIPS estimator using the exploration propensities, LightGBM's unbiased-LambdaMART position mode, and a training-data drift check.
+
+## 16. A/B testing framework (Phase 2)
+- **Assignment:** per domain, `murmur2(salt:user) mod 1000` gives a bucket in [0, 1000), and variants own bucket ranges. Assignment is deterministic and stateless, so it's the same on every replica. Experiments in different domains have independent salts.
+- **Variant config:**
+  - Ranker (`heuristic` | `lightgbm` | `lightgbm:candidate`).
+  - Heuristic weights.
+  - Exploration strategy override (`epsilon` | `thompson`).
+- **Logging:** `variant_id` and `ranker_version` appear on every served list and response, and `variant_id` is carried on events and attributed outcomes.
+- **Analysis:**
+  - Online: Prometheus counters by domain, variant and outcome.
+  - Offline: `recsys-ab-report` computes CTR (played / impressed), completion, early-skip and like rates per variant, with 95% CIs, two-proportion z-tests against control, and a **sample-ratio-mismatch** chi-square against the configured split.
+  - QA: `GET /v1/experiments/assignment`.
+- **Exploration:**
+  - ε-greedy, or **Thompson sampling** on Beta(starts + 1, impressions − starts + 1) per item.
+  - New items, which have no evidence, explore broadly. Items that keep failing stop being explored.
+  - Thompson propensities are estimated by Monte Carlo (100 draws) and logged.
+- `TODO(phase-3)`: overlapping experiment layers, sequential testing / CUPED, guardrail metrics and auto-stop.
+
+## 17. Re-embedding runbook (model or dimension change)
+1. Run `embedding-worker` with profile `backfill` and `--recs.backfill.target-index=items_te3s_1536_v1`.
+   - It reads the compacted catalog end to end and embeds through the **OpenAI Batch API**: JSONL upload → batch → poll → results.
+   - It writes Qdrant collection `items_te3s_1536_v1` and topic `catalog.embeddings.items_te3s_1536_v1`.
+   - It validates count parity, and with `switch-alias=true` it flips `items_current` only if every item was embedded.
+2. Deploy a shadow stream-processor: new `application-id`, `RECS_INDEX_VERSION=items_te3s_1536_v1` and `RECS_EMBEDDINGS_TOPIC` set to the new topic. Replay the 7 d of raw events so user vectors are rebuilt in the new space.
+3. Switch the API and the main stream-processor to the new index version. User vectors from the old space are ignored until rebuilt, because their `index_version` doesn't match. Keep the old collection for 7 d for rollback.
+

@@ -4,23 +4,25 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Real-time user features (Redis {@code u:{id}:st}), rewritten on every processed event.
+ * Real-time per-domain user features (Redis {@code u:{id}:st:<domain>}), rewritten on every event.
  *
  * @param vector unit-length short-term taste vector, float16 little endian; null if no evidence
  * @param indexVersion the embedding space {@code vector} lives in
- * @param recentlyPlayed itemId → last play time (epoch ms), pruned to the last few hours
+ * @param consumed itemId → last consumption time (epoch ms), kept for the domain's consumed window
+ *     (songs: hours, because they are replayable; books/videos/posts: weeks to a year)
  * @param suppressedArtists artistId → suppressed-until (epoch ms) after "not interested"
  * @param sessionGenres genre distribution of the current session ("session intent")
  */
 public record UserShortTerm(
     String userId,
+    String domain,
     String indexVersion,
     byte[] vector,
     List<RecentInteraction> recent,
     Map<String, Double> artistAffinity,
     Map<String, Double> genreAffinity,
     Map<String, Double> moodAffinity,
-    Map<String, Long> recentlyPlayed,
+    Map<String, Long> consumed,
     List<String> liked,
     List<String> suppressedItems,
     Map<String, Long> suppressedArtists,

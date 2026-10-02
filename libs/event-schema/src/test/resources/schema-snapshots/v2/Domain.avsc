@@ -1,0 +1,8 @@
+{
+  "type": "enum",
+  "name": "Domain",
+  "namespace": "com.recsys.events.v1",
+  "doc": "Content domain. UNKNOWN is the default so older readers tolerate new symbols.",
+  "symbols": ["UNKNOWN", "SONG", "BOOK", "VIDEO", "POST"],
+  "default": "UNKNOWN"
+}

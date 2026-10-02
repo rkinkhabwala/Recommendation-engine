@@ -11,23 +11,53 @@ public final class EmbeddingClients {
 
   private EmbeddingClients() {}
 
+  /** One cost meter (and budget) per process, shared by every OpenAI client. */
+  public static CostMeter costMeter(OpenAiSettings settings, MeterRegistry registry) {
+    return new CostMeter(
+        registry,
+        settings.pricePerMillionTokens(),
+        new BudgetGuard(settings.monthlyBudgetUsd(), Clock.systemUTC()));
+  }
+
   public static EmbeddingClient create(OpenAiSettings settings, MeterRegistry registry) {
-    CostMeter cost =
-        new CostMeter(
-            registry,
-            settings.pricePerMillionTokens(),
-            new BudgetGuard(settings.monthlyBudgetUsd(), Clock.systemUTC()));
+    return create(settings, registry, costMeter(settings, registry));
+  }
+
+  public static EmbeddingClient create(
+      OpenAiSettings settings, MeterRegistry registry, CostMeter cost) {
     if (settings.mock()) {
       log.info(
           "Using MockEmbeddingClient ({} dims). Set recs.openai.mode=openai to call OpenAI.",
           settings.dimensions());
       return new MockEmbeddingClient(
-          "mock-" + settings.embeddingModel(), settings.dimensions(), cost);
+          MockEmbeddingClient.REVISION + "-" + settings.embeddingModel(),
+          settings.dimensions(),
+          cost);
     }
     log.info(
         "Using OpenAI embeddings: model={} dims={}",
         settings.embeddingModel(),
         settings.dimensions());
     return new OpenAiEmbeddingClient(settings, cost, registry);
+  }
+
+  /**
+   * @param mockHandlers schema name → deterministic answer builder, used when mode=mock
+   */
+  public static ChatClient chat(
+      OpenAiSettings settings,
+      MeterRegistry registry,
+      CostMeter cost,
+      java.util.Map<
+              String,
+              java.util.function.Function<
+                  ChatClient.StructuredRequest, com.fasterxml.jackson.databind.JsonNode>>
+          mockHandlers) {
+    if (settings.mock()) {
+      log.info("Using MockChatClient (deterministic). Set recs.openai.mode=openai to call OpenAI.");
+      return new MockChatClient(mockHandlers, cost);
+    }
+    log.info("Using OpenAI chat model {}", settings.chatModel());
+    return new OpenAiChatClient(settings, cost, registry);
   }
 }

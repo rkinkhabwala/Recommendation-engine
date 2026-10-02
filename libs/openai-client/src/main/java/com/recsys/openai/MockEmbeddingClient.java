@@ -14,6 +14,15 @@ import java.util.Locale;
 public final class MockEmbeddingClient implements EmbeddingClient {
   private static final int PROJECTIONS = 4;
 
+  /** Embedder revision; part of {@link #model()} so a change re-embeds into a new index. */
+  static final String REVISION = "mock2";
+
+  private static final java.util.Set<String> STOPWORDS =
+      java.util.Set.of(
+          "the", "by", "and", "of", "an", "to", "in", "on", "for", "with", "about", "that", "it",
+          "is", "at", "from", "this", "its", "plus", "some", "can", "we", "my", "just", "genres",
+          "mood", "themes", "topics", "tone", "author", "channel", "poster");
+
   private final String model;
   private final int dims;
   private final CostMeter cost;
@@ -32,7 +41,7 @@ public final class MockEmbeddingClient implements EmbeddingClient {
       float[] v = new float[dims];
       String[] words = text.toLowerCase(Locale.ROOT).split("[^\\p{L}\\p{N}]+");
       for (String w : words) {
-        if (w.length() < 2) {
+        if (w.length() < 2 || STOPWORDS.contains(w)) {
           continue;
         }
         tokens++;

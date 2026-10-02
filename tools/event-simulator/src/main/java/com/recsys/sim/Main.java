@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
@@ -14,9 +15,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Usage:
  *
  * <pre>
- *   event-simulator catalog   [--songs 50000]
+ *   event-simulator catalog   [--songs 50000 --books 10000 --videos 10000 --posts 20000]
  *   event-simulator simulate  [--users 5000] [--concurrency 200] [--rate 500] [--duration 10m]
- *   event-simulator freshness [--trials 5] [--genre jazz]
+ *   event-simulator freshness [--trials 5] [--genre jazz] [--domain song] [--read-domain song]
  *   event-simulator all       (catalog, then simulate)
  * common: --ingest-url http://localhost:8081 --recs-url http://localhost:8080
  *         --catalog-url http://localhost:8082 --api-key dev-key --seed 42
@@ -36,33 +37,41 @@ public final class Main {
             opt.getOrDefault("recs-url", env("RECS_URL", "http://localhost:8080")),
             opt.getOrDefault("catalog-url", env("CATALOG_URL", "http://localhost:8082")),
             opt.getOrDefault("api-key", env("RECS_API_KEY", "dev-key")));
-    int songs = Integer.parseInt(opt.getOrDefault("songs", "50000"));
-    var catalog =
-        new SyntheticCatalog(
-            songs, Long.parseLong(opt.getOrDefault("seed", "42")), LocalDate.now());
+    Map<String, Integer> sizes = new LinkedHashMap<>();
+    sizes.put("song", Integer.parseInt(opt.getOrDefault("songs", "50000")));
+    sizes.put("book", Integer.parseInt(opt.getOrDefault("books", "10000")));
+    sizes.put("video", Integer.parseInt(opt.getOrDefault("videos", "10000")));
+    sizes.put("post", Integer.parseInt(opt.getOrDefault("posts", "20000")));
+    sizes.values().removeIf(n -> n <= 0);
+    var catalogs =
+        new Catalogs(sizes, Long.parseLong(opt.getOrDefault("seed", "42")), LocalDate.now());
     switch (args[0]) {
-      case "catalog" -> loadCatalog(api, catalog);
-      case "simulate" -> simulate(api, catalog, opt);
-      case "freshness" ->
-          new FreshnessCheck(api, catalog)
-              .run(
-                  Integer.parseInt(opt.getOrDefault("trials", "5")),
-                  opt.getOrDefault("genre", "jazz"));
+      case "catalog" -> loadCatalog(api, catalogs);
+      case "simulate" -> simulate(api, catalogs, opt);
+      case "freshness" -> {
+        String domain = opt.getOrDefault("domain", "song");
+        new FreshnessCheck(api, catalogs)
+            .run(
+                Integer.parseInt(opt.getOrDefault("trials", "5")),
+                opt.getOrDefault("genre", "jazz"),
+                domain,
+                opt.getOrDefault("read-domain", domain));
+      }
       case "all" -> {
-        loadCatalog(api, catalog);
-        System.out.println("Waiting 20s for embeddings to be indexed...");
-        Thread.sleep(20_000);
-        simulate(api, catalog, opt);
+        loadCatalog(api, catalogs);
+        System.out.println("Waiting 30s for embeddings to be indexed...");
+        Thread.sleep(30_000);
+        simulate(api, catalogs, opt);
       }
       default -> throw new IllegalArgumentException("unknown command " + args[0]);
     }
   }
 
-  static void simulate(ApiClient api, SyntheticCatalog catalog, Map<String, String> opt)
+  static void simulate(ApiClient api, Catalogs catalogs, Map<String, String> opt)
       throws InterruptedException {
     new Simulator(
             api,
-            catalog,
+            catalogs,
             Integer.parseInt(opt.getOrDefault("users", "5000")),
             Integer.parseInt(opt.getOrDefault("concurrency", "200")),
             Double.parseDouble(opt.getOrDefault("rate", "500")),
@@ -70,22 +79,25 @@ public final class Main {
         .run();
   }
 
-  static void loadCatalog(ApiClient api, SyntheticCatalog catalog) throws Exception {
+  static void loadCatalog(ApiClient api, Catalogs catalogs) throws Exception {
     List<Map<String, Object>> all = new ArrayList<>();
-    for (Song s : catalog.songs()) {
-      Map<String, Object> m = new HashMap<>();
-      m.put("itemId", s.id());
-      m.put("domain", "song");
-      m.put("title", s.title());
-      m.put("artistId", s.artistId());
-      m.put("artistName", s.artistName());
-      m.put("genres", s.genres());
-      m.put("moods", s.moods());
-      m.put("durationMs", s.durationMs());
-      m.put("releaseDate", s.releaseDate().toString());
-      m.put("explicit", s.explicit());
-      m.put("availableRegions", s.regions());
-      all.add(m);
+    for (String d : catalogs.domains()) {
+      for (Item s : catalogs.domain(d).items()) {
+        Map<String, Object> m = new HashMap<>();
+        m.put("itemId", s.id());
+        m.put("domain", s.domain());
+        m.put("title", s.title());
+        m.put("artistId", s.artistId());
+        m.put("artistName", s.artistName());
+        m.put("genres", s.genres());
+        m.put("moods", s.moods());
+        m.put("durationMs", s.durationMs());
+        m.put("releaseDate", s.releaseDate().toString());
+        m.put("explicit", s.explicit());
+        m.put("availableRegions", s.regions());
+        m.put("description", s.description());
+        all.add(m);
+      }
     }
     AtomicInteger done = new AtomicInteger();
     try (var exec = Executors.newFixedThreadPool(4)) {
@@ -107,7 +119,7 @@ public final class Main {
         f.get();
       }
     }
-    System.out.printf("catalog: loaded %d songs%n", all.size());
+    System.out.printf("catalog: loaded %d items %s%n", all.size(), catalogs.domains());
   }
 
   static Duration duration(String s) {
