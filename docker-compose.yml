@@ -8,11 +8,16 @@ x-service-env: &service-env
   QDRANT_HOST: qdrant
   QDRANT_GRPC_PORT: "6334"
   RECS_API_KEYS: ${RECS_API_KEYS:-dev-key}
+  # Cap glibc malloc arenas (untracked native RSS → OOM kills under load; see architecture R17).
+  MALLOC_ARENA_MAX: "2"
   # Current embedding space + its embeddings topic. A re-embed (README: Re-embedding) builds a new
   # index and topic, then switches both here.
   RECS_INDEX_VERSION: ${RECS_INDEX_VERSION:-items_mock_512_v2}
   RECS_EMBEDDINGS_TOPIC: ${RECS_EMBEDDINGS_TOPIC:-catalog.embeddings.v1}
   LOG_FORMAT: ${LOG_FORMAT:-ecs}
+  # Distributed tracing: OTLP/HTTP to Jaeger (UI http://localhost:16686).
+  MANAGEMENT_OTLP_TRACING_ENDPOINT: http://jaeger:4318/v1/traces
+  TRACING_SAMPLING: ${TRACING_SAMPLING:-0.1}
 
 # Every container has a memory limit: without one each JVM sizes its heap from the whole Docker VM
 # and the kernel OOM-kills the largest process under load.
@@ -219,6 +224,17 @@ services:
       - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./config/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
 
+  alertmanager:
+    image: prom/alertmanager:v0.34.1
+    mem_limit: 128m
+    ports: ["9093:9093"]
+    volumes: ["./config/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro"]
+
+  jaeger:
+    image: jaegertracing/jaeger:2.21.0
+    mem_limit: 512m
+    ports: ["16686:16686", "4318:4318"]
+
   grafana:
     image: grafana/grafana:13.2.3
     mem_limit: 256m
@@ -226,7 +242,9 @@ services:
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
-    volumes: ["./config/grafana/provisioning:/etc/grafana/provisioning:ro"]
+    volumes:
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
 
   # docker compose --profile sim run --rm simulator all
   simulator:

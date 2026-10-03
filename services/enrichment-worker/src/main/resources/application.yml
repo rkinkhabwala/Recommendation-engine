@@ -1,10 +1,15 @@
 server:
   port: 8086
+  shutdown: graceful # finish in-flight requests on SIGTERM (K8s rolling updates)
 spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
   application:
     name: enrichment-worker
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    template:
+      observation-enabled: true
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.ByteArraySerializer
@@ -21,6 +26,7 @@ spring:
         specific.avro.reader: true
         max.poll.interval.ms: 900000
     listener:
+      observation-enabled: true
       type: batch
       concurrency: 3
 recs:
@@ -49,11 +55,16 @@ recs:
     initial-backoff: 1s
     requests-per-minute: 300
     monthly-budget-usd: ${RECS_OPENAI_MONTHLY_BUDGET_USD:50}
+    # Shared spend ledger (INCRBYFLOAT) so all worker replicas enforce one budget.
+    budget-redis-uri: ${RECS_OPENAI_BUDGET_REDIS_URI:${REDIS_URI:}}
     price-per-million-tokens:
       # Verify against current OpenAI pricing (USD per 1M tokens).
       gpt-5-mini: 0.25
       "[gpt-5-mini:output]": 2.0
 management:
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING:0.1}
   endpoints:
     web:
       exposure:

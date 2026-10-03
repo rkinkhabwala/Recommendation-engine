@@ -13,10 +13,27 @@ public final class EmbeddingClients {
 
   /** One cost meter (and budget) per process, shared by every OpenAI client. */
   public static CostMeter costMeter(OpenAiSettings settings, MeterRegistry registry) {
+    return costMeter(settings, registry, new SpendLedger.InMemory());
+  }
+
+  /**
+   * @param ledger shared across replicas in production ({@link RedisSpendLedger})
+   */
+  public static CostMeter costMeter(
+      OpenAiSettings settings, MeterRegistry registry, SpendLedger ledger) {
     return new CostMeter(
         registry,
         settings.pricePerMillionTokens(),
-        new BudgetGuard(settings.monthlyBudgetUsd(), Clock.systemUTC()));
+        new BudgetGuard(settings.monthlyBudgetUsd(), Clock.systemUTC(), ledger));
+  }
+
+  /** Redis-backed ledger when {@code uri} is set, else in-process (dev/tests). */
+  public static SpendLedger ledger(String uri) {
+    if (uri == null || uri.isBlank()) {
+      return new SpendLedger.InMemory();
+    }
+    var client = io.lettuce.core.RedisClient.create(uri);
+    return new RedisSpendLedger(client.connect());
   }
 
   public static EmbeddingClient create(OpenAiSettings settings, MeterRegistry registry) {

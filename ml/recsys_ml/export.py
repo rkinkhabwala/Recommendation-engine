@@ -3,7 +3,7 @@
 Reads a snapshot (beginning -> current end offsets) of recs.served.v1, recs.attributed.v1 and the
 compacted catalog.items.v1. User ids are pseudonymized with HMAC-SHA256 before anything is written.
 
-TODO(phase-3): per-user HMAC keys (crypto-shredding on deletion) and a Kafka Connect S3 sink.
+TODO(phase-4): per-user HMAC keys (crypto-shredding on deletion) and a Kafka Connect S3 sink.
 """
 
 from __future__ import annotations

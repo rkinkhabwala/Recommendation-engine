@@ -1,10 +1,15 @@
 server:
   port: 8084
+  shutdown: graceful # finish in-flight requests on SIGTERM (K8s rolling updates)
 spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
   application:
     name: embedding-worker
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    template:
+      observation-enabled: true
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
@@ -25,6 +30,7 @@ spring:
         specific.avro.reader: true
         max.poll.interval.ms: 600000
     listener:
+      observation-enabled: true
       type: batch
 recs:
   embedding:
@@ -51,11 +57,16 @@ recs:
     requests-per-minute: 500
     # Dev budget; Prometheus alerts at 50% and 80% of recs_openai_budget_used_ratio.
     monthly-budget-usd: ${RECS_OPENAI_MONTHLY_BUDGET_USD:50}
+    # Shared spend ledger (INCRBYFLOAT) so all worker replicas enforce one budget.
+    budget-redis-uri: ${RECS_OPENAI_BUDGET_REDIS_URI:${REDIS_URI:}}
     price-per-million-tokens:
       # Verify against current OpenAI pricing; used only for cost metrics and the budget guard.
       text-embedding-3-small: 0.02
       text-embedding-3-large: 0.13
 management:
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING:0.1}
   endpoints:
     web:
       exposure:

@@ -4,9 +4,10 @@ Real-time recommendation system for songs, books, videos and posts. Full spec: `
 Technical design: `docs/architecture.md`. (`architecture.md` at the root is a plain-language explainer, not the design.)
 
 ## Current phase
-Phases 1 (songs MVP) and 2 (multi-domain, LLM enrichment/explanations, learned ranker, A/B,
-cross-domain) are implemented and awaiting review. Phase 3 (production hardening) starts only when
-the user explicitly says so. Pause for review after each phase. Mark deferred work as `// TODO(phase-3): ...`.
+Phases 1 (songs MVP), 2 (multi-domain, LLM enrichment/explanations, learned ranker, A/B,
+cross-domain) and 3 (production hardening: JWT auth, catalog outbox, shared OpenAI budget, load
+shedding, tracing, dashboards, alerting, Kubernetes, load tests, cost report) are implemented. Phase 3 is
+awaiting review. Pause for review after each phase. Mark deferred work as `// TODO(phase-4): ...`.
 
 ## Hard rules
 1. **OpenAI is never called in the serving path.** `services/recommendation-api` must not depend on
@@ -53,7 +54,7 @@ Prod target: Kubernetes on AWS (Phase 3).
 - `libs/common` holds IDs (UUIDv7), clock, config records, observability helpers and the Redis CAS script.
 - `libs/feature-store` holds the Redis key schema plus typed readers and writers shared by the stream processor and the API.
 - `libs/vector-index` holds the `VectorIndex` interface, the Qdrant implementation and an in-memory test fixture.
-- `libs/web-support` holds the API-key filter and error mapping (Spring auto-configuration).
+- `libs/web-support` holds `AdmissionFilter` (load shedding), `AuthFilter` (API key / JWT), `Principals` (authorization helpers) and error mapping (Spring auto-configuration).
 - `libs/openai-client` holds the embeddings, structured-output chat and Batch API clients, plus the `EmbeddingClient` interface, the OpenAI implementation (retries, breaker, rate limiting, cost metrics) and `MockEmbeddingClient`.
 - `services/ingestion-api` takes `POST /v1/events`, validates the JSON, converts it to Avro and produces it.
 - `services/catalog-service` takes catalog upserts, writes them to Postgres and produces `catalog.items.v1`.
@@ -62,6 +63,8 @@ Prod target: Kubernetes on AWS (Phase 3).
 - `services/enrichment-worker` runs LLM metadata enrichment (writing through the catalog-service PATCH endpoint) and cached explanations (published to `features.item.v1`).
 - `services/recommendation-api` serves `GET /v1/recommendations` through candidate generation, ranking, re-ranking and fallback.
 - `tools/event-simulator` generates synthetic catalogs and user behaviour for all four domains, and runs the freshness checks.
+- `deploy/k8s` holds Kustomize base/components/overlays **generated** by `deploy/k8s/generate.py` (edit the generator, then `uv run deploy/k8s/generate.py`).
+- `tools/cost/cost_model.py` is the cost model behind `docs/cost-report.md`. `config/grafana/generate_dashboards.py` generates the dashboards.
 - `ml/` (Python 3.12, uv, runs in Docker) handles export, dataset, LightGBM training, gating, the registry (`ml/models`), the A/B report and the embedding-dims benchmark.
 
 ## Commands
@@ -76,7 +79,13 @@ docker compose --profile sim run --rm simulator all        # load the catalog + 
 docker compose --profile sim run --rm simulator freshness  # end-to-end freshness check (<5 s)
 docker compose --profile ml run --rm ml recsys-export --out data   # then recsys-train / recsys-ab-report / recsys-promote
 docker build -t recsys/ml:local ml && docker run --rm recsys/ml:local pytest -q  # ML tests (LightGBM needs libgomp → Docker)
+uv run deploy/k8s/generate.py && kubectl kustomize deploy/k8s/overlays/prod-aws   # regenerate + render manifests
+docker run --rm -v "$PWD/config/prometheus:/p" --entrypoint promtool prom/prometheus:v3.6.0 test rules /p/alerts_test.yml
 ```
+- Every alert in `config/prometheus/alerts.yml` needs a `runbook_url` section in `docs/runbooks.md` and a
+  `promtool` test. After editing alerts or dashboards, regenerate `deploy/k8s` (it embeds both).
+- JVMs run with `MALLOC_ARENA_MAX=2` and a container memory limit (untracked native RSS caused OOM kills).
+  K8s: memory limit = request, no CPU limits.
 - The Gradle daemon runs on JDK 21 (`gradle/gradle-daemon-jvm.properties`). google-java-format breaks on newer JDKs.
 - This checkout lives in an iCloud-synced folder. `~/.gradle/gradle.properties` sets
   `recsys.buildDirName=build.nosync`, so build output goes to `build.nosync/`. Delete any `* 2.java`
@@ -94,4 +103,5 @@ docker build -t recsys/ml:local ml && docker run --rm recsys/ml:local pytest -q 
 - Tests use JUnit 5 + AssertJ. Unit tests are `*Test` and run without Docker. Integration tests are `*IT` and use Testcontainers
   (Kafka, Redis, Qdrant, Postgres). Kafka Streams logic is tested with `TopologyTestDriver`.
 - Metrics are named `recs_<component>_<thing>_<unit>`. Every log line carries `trace_id`, and none contains free text or PII.
+- Public endpoints authorize with `Principals.requireUser` / `requireScope`. Never trust a `userId` parameter alone.
 - Keep it simple: no new infrastructure or framework without a written trade-off in `docs/architecture.md`.

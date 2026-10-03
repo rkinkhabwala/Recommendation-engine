@@ -5,8 +5,8 @@ The unit of randomization is the user, so SRM counts distinct users per variant.
 experiment window (`--since`): mixing periods (e.g. before a variant existed) produces spurious,
 Simpson's-paradox differences — which the SRM check exists to catch.
 
-Rates are computed per impression/play; outcomes of one user are correlated, so these CIs are
-optimistic. TODO(phase-3): user-clustered (delta-method) CIs, CUPED, sequential testing.
+Confidence intervals are **user-clustered** (delta method for ratio metrics): outcomes of one
+user are correlated, so per-impression CIs would be optimistic. TODO: CUPED, sequential testing.
 """
 
 from __future__ import annotations
@@ -31,6 +31,37 @@ def proportion_test(x1: int, n1: int, x2: int, n2: int) -> dict:
     p_value = math.erfc(abs(z) / math.sqrt(2))
     se = math.sqrt(max(p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2, 1e-12))
     return {"diff": p2 - p1, "ci95": [p2 - p1 - 1.96 * se, p2 - p1 + 1.96 * se], "p_value": p_value}
+
+
+def clustered_ratio_test(control: pd.DataFrame, treatment: pd.DataFrame, num: str, den: str) -> dict:
+    """Ratio metric sum(num)/sum(den) with user-level clustering (delta method).
+
+    Each DataFrame has one row per user with columns num, den. Var(R) ≈ Var(num - R·den) /
+    (n · mean(den)^2).
+    """
+
+    def stats(d: pd.DataFrame):
+        d = d[d[den] > 0]
+        n = len(d)
+        if n < 2:
+            return None
+        r = d[num].sum() / d[den].sum()
+        resid = d[num] - r * d[den]
+        var = resid.var(ddof=1) / (n * d[den].mean() ** 2)
+        return r, var
+
+    a, b = stats(control), stats(treatment)
+    if a is None or b is None:
+        return {"diff": None, "ci95": None, "p_value": None}
+    diff = b[0] - a[0]
+    se = math.sqrt(max(a[1] + b[1], 1e-18))
+    z = diff / se
+    return {"diff": diff, "ci95": [diff - 1.96 * se, diff + 1.96 * se], "p_value": math.erfc(abs(z) / math.sqrt(2))}
+
+
+def user_counts(attributed: pd.DataFrame) -> pd.DataFrame:
+    a = attributed.drop_duplicates(["recommendation_id", "item_id", "outcome"])
+    return a.pivot_table(index=["domain", "variant_id", "user"], columns="outcome", values="item_id", aggfunc="count", fill_value=0)
 
 
 def srm_p_value(counts: dict[str, int], expected_share: dict[str, float]) -> float:
@@ -82,14 +113,24 @@ def report(
                 "like_rate": (row["LIKED"] + row["SAVED"]) / imp if imp else None,
             }
         if control in g.index:
-            c = g.loc[control]
+            per_user = user_counts(attributed)
+            for col in ("IMPRESSED", "PLAYED", "COMPLETED", "SKIPPED_EARLY"):
+                if col not in per_user:
+                    per_user[col] = 0
+            def users_of(variant):
+                try:
+                    return per_user.loc[(domain, variant)]
+                except KeyError:
+                    return pd.DataFrame(columns=per_user.columns)
+            cu = users_of(control)
             for v, row in g.iterrows():
                 if v == control:
                     continue
+                tu = users_of(v)
                 variants[v]["vs_control"] = {
-                    "ctr": proportion_test(int(c["PLAYED"]), int(c["IMPRESSED"]), int(row["PLAYED"]), int(row["IMPRESSED"])),
-                    "completion_rate": proportion_test(int(c["COMPLETED"]), int(c["PLAYED"]), int(row["COMPLETED"]), int(row["PLAYED"])),
-                    "early_skip_rate": proportion_test(int(c["SKIPPED_EARLY"]), int(c["PLAYED"]), int(row["SKIPPED_EARLY"]), int(row["PLAYED"])),
+                    "ctr": clustered_ratio_test(cu, tu, "PLAYED", "IMPRESSED"),
+                    "completion_rate": clustered_ratio_test(cu, tu, "COMPLETED", "PLAYED"),
+                    "early_skip_rate": clustered_ratio_test(cu, tu, "SKIPPED_EARLY", "PLAYED"),
                 }
         expected = (split or {}).get(domain)
         out_srm = None

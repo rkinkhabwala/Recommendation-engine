@@ -17,7 +17,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 
 /**
  * In-process popular lists refreshed from Redis every minute, so recommendations survive a full
- * Redis outage. The bundled static list covers a cold process with Redis down. TODO(phase-3):
+ * Redis outage. The bundled static list covers a cold process with Redis down. TODO(phase-4):
  * generate the static list from trending at deploy time.
  */
 public class PopularCache {

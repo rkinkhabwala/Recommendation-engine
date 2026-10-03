@@ -12,6 +12,7 @@ dependencies {
   implementation(libs.confluent.avro.serializer)
   implementation("com.github.ben-manes.caffeine:caffeine")
   implementation(libs.resilience4j.circuitbreaker)
+  implementation(libs.resilience4j.micrometer)
 
   testImplementation(testFixtures(project(":libs:feature-store")))
   testImplementation(testFixtures(project(":libs:vector-index")))

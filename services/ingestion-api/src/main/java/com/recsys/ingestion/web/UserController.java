@@ -11,6 +11,7 @@ import com.recsys.ingestion.kafka.EventPublisher.Outgoing;
 import com.recsys.ingestion.web.EventDtos.AcceptedResponse;
 import com.recsys.ingestion.web.EventDtos.OnboardingRequest;
 import com.recsys.web.ApiException;
+import com.recsys.web.Principals;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
@@ -70,7 +71,7 @@ public class UserController {
   }
 
   /**
-   * Starts deletion across all stores (see docs/architecture.md §9). TODO(phase-3): persist the
+   * Starts deletion across all stores (see docs/architecture.md §9). TODO(phase-4): persist the
    * request in a deletion_requests table and expose completion status.
    */
   @DeleteMapping("/v1/users/{userId}/data")
@@ -102,5 +103,6 @@ public class UserController {
     if (!EventValidator.ID.matcher(userId).matches()) {
       throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_USER_ID", "invalid user id");
     }
+    Principals.requireUser(userId);
   }
 }

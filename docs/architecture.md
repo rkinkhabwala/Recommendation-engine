@@ -14,7 +14,7 @@ Plain-language version: [`../architecture.md`](../architecture.md).
 | Serving latency | **p50 < 30 ms, p99 < 100 ms** at the API edge (excludes client network) |
 | Freshness | User action reflected in recommendations **< 5 s** (measured as event `received_ts` → feature committed in Redis) |
 | Region | Single AWS region; multi-region is out of scope |
-| Auth | Gateway authenticates and passes `user_id`. MVP uses an API key. `TODO(phase-3)`: JWT |
+| Auth | `recs.security.mode`: `api-key` (local), `jwt` or `jwt-or-api-key` (prod). End users carry RS256/ES256 JWTs verified against the IdP JWKS (`sub` = user, scopes such as `catalog:write`); internal services use API keys. Controllers enforce that a user may act only for themselves (§19) |
 | Embeddings | `text-embedding-3-small`, `dimensions=512` (configurable). `ml/recsys_ml/bench_embedding_dims.py` measures 512 vs 1536 next-item recall@K. It needs `OPENAI_API_KEY`, and hasn't been run in mock mode |
 | OpenAI budget | Dev: $50/month, alerts at 50% ($25) and 80% ($40) |
 | Deletion SLA | All of a user's data purged from every store within **30 days** |
@@ -173,7 +173,7 @@ sequenceDiagram
 
 ### 3.2 catalog-service
 - `POST /v1/catalog/items` upserts into Postgres (`items` table, `updated_at`, `content_hash`). It then produces `CatalogItem` to `catalog.items.v1` (compacted, keyed by `item_id`). The stream processor turns that topic into `i:{id}:meta` feature records. Nothing writes Redis directly except the feature-writer, so Redis can always be rebuilt from Kafka.
-- `TODO(phase-3)`: transactional outbox (or Debezium CDC) to remove the Postgres/Kafka dual-write risk. For the MVP, a periodic reconciler re-publishes rows whose `published_seq < seq`.
+- **Transactional outbox (Phase 3):** the item change and its `outbox` row are written in one Postgres transaction (a single CTE statement). `OutboxRelay` claims rows with `FOR UPDATE SKIP LOCKED` (safe with several replicas), collapses repeated changes to the latest version, produces them and deletes the rows in the same transaction. A crash after the send re-publishes, which is harmless: the topic is compacted and consumers are idempotent. Backlog: `recs_catalog_outbox_pending` / `_oldest_seconds`.
 
 ### 3.3 stream-processor (Kafka Streams, `processing.guarantee=exactly_once_v2`)
 Input is keyed by `user_id`. Main sub-topologies:
@@ -296,15 +296,15 @@ Circuit breakers on Redis and Qdrant short-circuit straight to the right level, 
 | Offline store (phase 2) | **S3 Parquet** via Kafka Connect S3 sink, partitioned `dt=/hour=` | Cheap, standard for training and eval | **Warehouse-first:** add later if analysts need SQL (Athena works on the same files) |
 
 **Capacity notes (prod design).**
-- **Qdrant:** 5M × 512 × 4 B ≈ **10 GB** raw vectors, plus ~0.7 GB HNSW links (m = 16). `TODO(phase-3)`: int8 scalar quantization, which holds ~2.5 GB in RAM with originals on disk for rescoring.
+- **Qdrant:** 5M × 512 × 4 B ≈ **10 GB** raw vectors, plus ~0.7 GB HNSW links (m = 16). `TODO(phase-4)`: int8 scalar quantization, which holds ~2.5 GB in RAM with originals on disk for rescoring.
 - **Redis:** ~3M users active in 30 d × ~5 KB (two float16 vectors at 1 KB each, recent list, affinities) ≈ 15 GB. Items: 5M × ~1.5 KB ≈ 7.5 GB. Total ≈ 25 GB plus replicas. Idle user keys have a 30 d TTL.
-- **Kafka:** 50K events/s × ~400 B ≈ 20 MB/s ≈ 1.7 TB/day; with 7 d retention × RF3 ≈ 36 TB. `TODO(phase-3)`: tiered storage.
+- **Kafka:** 50K events/s × ~400 B ≈ 20 MB/s ≈ 1.7 TB/day; with 7 d retention × RF3 ≈ 36 TB. `TODO(phase-4)`: tiered storage.
 
 ---
 
 ## 5. Signal weights
 
-Weights are config (`recs.signals.<domain>`), applied in the stream processor. All four domains are implemented. `TODO(phase-3)`: fit weights by regressing on downstream outcomes (7-day return, session length).
+Weights are config (`recs.signals.<domain>`), applied in the stream processor. All four domains are implemented. `TODO(phase-4)`: fit weights by regressing on downstream outcomes (7-day return, session length).
 
 ### Songs (Phase 1)
 | Signal | Weight | Rationale |
@@ -411,7 +411,7 @@ Other schemas (fields abbreviated):
 - **`ItemEmbedding`**: `item_id, domain, index_version, model, dims, content_hash, vector: array<float>, embedded_at`.
 - **`RecommendationServed`**: `recommendation_id, user_id, domain, surface, variant_id, ranker_version, index_version, fallback_level, served_ts, items[]{item_id, position, score, source[], reason_code, explore, propensity, features?: map<float> (sampled)}`.
 - **`RecommendationAttributed`**: `recommendation_id, item_id, position, user_id, variant_id, outcome (PLAYED|COMPLETED|SKIPPED_EARLY|LIKED|SAVED|NONE), first_outcome_ts`.
-- **Internal topics are JSON, not Avro.** This applies to `features.*`, the repartition topics and the state-store changelogs. They are owned and read by one service and are not contracts. `features.*` values are a `FeatureEnvelope {seq, ttlSeconds, sourceTs, data}`, where `data` is the exact JSON stored in Redis (`UserShortTerm`, `UserVector`, `ItemStats`, `Neighbors`, `TrendingList`; see `libs/feature-store`). A null value means delete. Every topic that crosses a service boundary is Avro. `TODO(phase-3)`: a binary serde for state stores.
+- **Internal topics are JSON, not Avro.** This applies to `features.*`, the repartition topics and the state-store changelogs. They are owned and read by one service and are not contracts. `features.*` values are a `FeatureEnvelope {seq, ttlSeconds, sourceTs, data}`, where `data` is the exact JSON stored in Redis (`UserShortTerm`, `UserVector`, `ItemStats`, `Neighbors`, `TrendingList`; see `libs/feature-store`). A null value means delete. Every topic that crosses a service boundary is Avro. `TODO(phase-4)`: a binary serde for state stores.
 - **`UserDeletionRequested`**: `user_id, requested_ts, request_id`.
 
 ---
@@ -485,7 +485,7 @@ The flow: `DELETE /v1/users/{id}/data` → `users.deletion.v1` → each store ap
 | Item-keyed aggregates (CTR, co-engagement counts) | Aggregate counts with no user identifier; not personal data | n/a |
 | S3 (Phase 2) | Raw partitions `dt=` with a 30 d lifecycle expiry. Long-lived training sets replace `user_id` with `HMAC(user_key, user_id)`, so deleting `user_key` crypto-shreds them | ≤ 30 d |
 | Logs | No free text. 14 d retention | ≤ 14 d |
-| OpenAI | No user identifiers are ever sent. Onboarding text is scrubbed; subject to OpenAI API data-retention terms. `TODO(phase-3)`: evaluate zero-data-retention eligibility | — |
+| OpenAI | No user identifiers are ever sent. Onboarding text is scrubbed; subject to OpenAI API data-retention terms. `TODO(phase-4)`: evaluate zero-data-retention eligibility | — |
 
 A daily job marks a `deletion_requests` row complete once its longest bound (S3 lifecycle) has elapsed. An integration test asserts that no key or record for a deleted test user survives in Redis, the Streams stores or the compacted topics.
 
@@ -506,7 +506,7 @@ A daily job marks a `deletion_requests` row complete once its longest bound (S3 
   - Keys are `expl:{sha256(domain|reason|seed|item)}`, never the user, so one sentence serves everyone who gets that recommendation for that reason, and the prompt contains no user data.
   - The output is validated (single line, ≤ 160 chars, no links), then published to `features.item.v1` with a 30-day TTL, which the feature-writer applies to Redis. Redis therefore stays rebuildable.
   - Serving reads the cache with a 5 ms budget and never waits for generation.
-- **LLM re-ranking:** async batch only (for example a daily "books for you" email) over ≤ 50 candidates. Never used for feeds. `TODO(phase-3)`: not built.
+- **LLM re-ranking:** async batch only (for example a daily "books for you" email) over ≤ 50 candidates. Never used for feeds. `TODO(phase-4)`: not built.
 
 ## 11. Observability
 - **Metrics:**
@@ -521,13 +521,14 @@ A daily job marks a `deletion_requests` row complete once its longest bound (S3 
   - Online CTR, completion and skip rate per variant (from `recs.attributed.v1`).
 - **Tracing:** OpenTelemetry, with `traceparent` propagated through Kafka headers so ingestion → stream → writer is traceable.
 - **Logs:** Spring Boot structured JSON with `trace_id`, `user_id`, `recommendation_id`.
-- **Alerts:** p99 > 100 ms for 5 min; freshness p95 > 5 s; consumer lag growing; fallback rate > 2%; OpenAI budget at 50% / 80%.
+- **Alerts:** 17 rules in `config/prometheus/alerts.yml` (unit-tested with `promtool test rules`), each linked to `docs/runbooks.md`: availability burn rate, p99/p50, load shedding, freshness, fallback rate, breakers, lag, outbox backlog, DLQ, model load, OpenAI budget 50%/80%. Routed by Alertmanager (`page` vs `ticket`).
+- **Dashboards:** five generated Grafana dashboards (`config/grafana/generate_dashboards.py`): SLOs, Pipeline, Serving internals, Experiments & models, OpenAI. Shipped to K8s as ConfigMaps for the Grafana sidecar.
 
 ## 12. Evaluation
 - **Offline** (`ml/recsys_ml/metrics.py`, `train.py`):
   - Metrics: NDCG@10, precision@5, recall@5, coverage@5, intra-list diversity@5 (share of distinct creators) and novelty@5 (mean −log2 popularity).
   - Computed on a later time slice (split by group, so nothing leaks across the split), comparing the model's order with the logged serving order.
-  - Exploration propensities are logged for IPS estimates. `TODO(phase-3)`: an IPS/SNIPS estimator.
+  - Exploration propensities are logged for IPS estimates. `TODO(phase-4)`: an IPS/SNIPS estimator.
 - **Online:** `recs_online_outcomes_total` and `recs_online_served_items_total` by domain, variant and outcome (Prometheus). `ml/recsys_ml/ab_report.py` adds CTR, completion, early-skip and like rates per variant, with 95% CIs, two-proportion z-tests against control, and a sample-ratio-mismatch check.
 
 ---
@@ -546,14 +547,14 @@ A daily job marks a `deletion_requests` row complete once its longest bound (S3 
 | R8 | Clock skew and late or out-of-order events | Server clamp, event-time windows with 10 min grace, order-independent decayed sums, 24 h dedupe window, late topic |
 | R9 | Co-occurrence pair explosion | Last 5 items per session only, min support, top-50 pruning, decay |
 | R10 | Streams rebalance or state-restore stalls freshness | Standby replicas, static membership, cooperative rebalancing, local SSD for RocksDB, restore-time alert |
-| R11 | Catalog Postgres/Kafka dual-write inconsistency | MVP reconciler on `published_seq`. `TODO(phase-3)`: outbox / Debezium |
+| R11 | Catalog Postgres/Kafka dual-write inconsistency | Transactional outbox with a `SKIP LOCKED` relay (Phase 3); `CatalogOutboxBacklog` alert |
 | R12 | PII leakage (free text, logs, OpenAI) | No raw queries or free text in events or logs. Scrubbing before OpenAI. Short retention. Crypto-shredding in S3 |
 | R13 | Deletion incomplete (tombstones not compacted, delete-policy topics) | Retention ≤ 7 d on raw topics, `max.compaction.lag.ms`, deletion marker, automated deletion integration test |
 | R14 | Training/serving skew for the learned ranker | Log sampled serving-time features in `recs.served.v1`. Shared feature code in `libs/feature-store` |
 | R15 | Cold start quality | Onboarding seed vector, popular-in-region, new items embedded on ingest and eligible for exploration within seconds |
-| R16 | Kafka storage cost at prod scale (~36 TB) | 7 d retention, compression (zstd), `TODO(phase-3)` tiered storage |
-| R17 | JVMs sizing their heap from the host instead of the container (seen locally as OOM kills and multi-second GC stalls) | Every container has a memory limit. JVMs use `MaxRAMPercentage=60` (40 for the stream processor, which needs room for RocksDB), capped direct memory, G1, and exit on OOM. RocksDB uses a bounded shared block cache. `TODO(phase-3)`: requests/limits in K8s from load-test profiles |
-| R19 | An enrichment or template rollout mass re-embeds the catalog, and the Qdrant re-index storm hurts serving (seen locally: Qdrant at 660% CPU, about 2% client timeouts) | The enricher is throttled (`max-items-per-second`). Bulk rollouts go through the backfill job into a new index plus an alias switch, not in-place upserts. `TODO(phase-3)`: Qdrant optimizer settings and a dedicated indexing node |
+| R16 | Kafka storage cost at prod scale (~36 TB) | 7 d retention, zstd on prod topics (`config/kafka/topics.prod.conf`), MSK tiered storage after 1 d hot: ~4 TB broker + ~8 TB tiered (docs/cost-report.md) |
+| R17 | JVMs sizing their heap from the host instead of the container (seen locally as OOM kills and multi-second GC stalls) | Every container has a memory limit. JVMs use `MaxRAMPercentage=60` (40 for the stream processor, which needs room for RocksDB), capped direct memory, G1, and exit on OOM. RocksDB uses a bounded shared block cache. K8s: memory limit = request, no CPU limit (throttling hurts tail latency), sizes from the kind capacity ramp (docs/load-test-results.md) |
+| R19 | An enrichment or template rollout mass re-embeds the catalog, and the Qdrant re-index storm hurts serving (seen locally: Qdrant at 660% CPU, about 2% client timeouts) | The enricher is throttled (`max-items-per-second`). Bulk rollouts go through the backfill job into a new index plus an alias switch, not in-place upserts. `TODO(phase-4)`: Qdrant optimizer settings and a dedicated indexing node |
 | R20 | The LLM produces wrong or unsafe metadata | Strict schemas with closed vocabularies, re-validation (tags, lengths, no URLs or handles), curated values always win, enrichment is versioned and idempotent. Explanations are user-agnostic, length-capped and link-free |
 | R21 | A learned ranker regresses quality, or offline evaluation is misleading because logged clicks are position-biased | Two-stage gate: a position-free offline quality check, then an online A/B with confidence intervals and an SRM check. Promotion is an explicit pointer flip, and rollback means pointing back to the previous version. Missing or invalid models fall back to the heuristic, visibly |
 | R22 | Training/serving skew | One `FeatureExtractor` computes the features both rankers use. The same values are logged, and the registry refuses models whose feature list differs |
@@ -608,7 +609,7 @@ flowchart LR
   - Variants choose `heuristic`, `lightgbm` (current) or `lightgbm:candidate`.
   - A missing or mismatched model falls back to the heuristic. The served `ranker_version` shows which ranker actually ran.
 - **Rollback:** point `current` (or `candidate`) back at the previous version with `recsys-promote`. Versions are immutable.
-- `TODO(phase-3)`: an object-store registry with approvals, scheduled retraining, an IPS/SNIPS estimator using the exploration propensities, LightGBM's unbiased-LambdaMART position mode, and a training-data drift check.
+- `TODO(phase-4)`: an object-store registry with approvals, scheduled retraining, an IPS/SNIPS estimator using the exploration propensities, LightGBM's unbiased-LambdaMART position mode, and a training-data drift check.
 
 ## 16. A/B testing framework (Phase 2)
 - **Assignment:** per domain, `murmur2(salt:user) mod 1000` gives a bucket in [0, 1000), and variants own bucket ranges. Assignment is deterministic and stateless, so it's the same on every replica. Experiments in different domains have independent salts.
@@ -625,7 +626,7 @@ flowchart LR
   - ε-greedy, or **Thompson sampling** on Beta(starts + 1, impressions − starts + 1) per item.
   - New items, which have no evidence, explore broadly. Items that keep failing stop being explored.
   - Thompson propensities are estimated by Monte Carlo (100 draws) and logged.
-- `TODO(phase-3)`: overlapping experiment layers, sequential testing / CUPED, guardrail metrics and auto-stop.
+- `TODO(phase-4)`: overlapping experiment layers, sequential testing / CUPED, guardrail metrics and auto-stop.
 
 ## 17. Re-embedding runbook (model or dimension change)
 1. Run `embedding-worker` with profile `backfill` and `--recs.backfill.target-index=items_te3s_1536_v1`.
@@ -635,3 +636,48 @@ flowchart LR
 2. Deploy a shadow stream-processor: new `application-id`, `RECS_INDEX_VERSION=items_te3s_1536_v1` and `RECS_EMBEDDINGS_TOPIC` set to the new topic. Replay the 7 d of raw events so user vectors are rebuilt in the new space.
 3. Switch the API and the main stream-processor to the new index version. User vectors from the old space are ignored until rebuilt, because their `index_version` doesn't match. Keep the old collection for 7 d for rollback.
 
+
+---
+
+## 18. Deployment on Kubernetes (Phase 3)
+
+Manifests live in `deploy/k8s` and are **generated** by `deploy/k8s/generate.py` (`uv run deploy/k8s/generate.py`) from one service table, so every service gets the same probes, security context and rollout policy. Edit the generator, not the YAML.
+
+```
+deploy/k8s/
+  base/                 namespace (PSS restricted), SA, config (hashed configMapGenerator), NetworkPolicies,
+                        topics Job (topics.prod.conf), 6 services: Deployment/StatefulSet + Service + HPA + PDB
+  components/monitoring ServiceMonitor, PrometheusRule (from config/prometheus/alerts.yml), dashboard ConfigMaps
+  components/keda       ScaledObjects: workers and stream-processor scale on consumer lag
+  overlays/local        kind: + Kafka, Schema Registry, Redis, Qdrant, Postgres, Jaeger; dev secrets; 1 replica
+  overlays/prod-aws     MSK / ElastiCache / RDS endpoints, ExternalSecrets (AWS Secrets Manager), internal ALB,
+                        IRSA, model-sync sidecar (S3 → /models), images from ECR; qdrant-values.yaml for Helm
+```
+
+| Service | Kind | Requests (prod) | Scaling | PDB |
+|---|---|---|---|---|
+| recommendation-api | Deployment | 1 vCPU / 1.5 GiB | HPA 6–60 on CPU 60% (fast up, slow down) | minAvailable 4 |
+| ingestion-api | Deployment | 0.5 / 768 MiB | HPA 3–30 on CPU 60% | 2 |
+| catalog-service | Deployment | 0.5 / 768 MiB | fixed 2 (outbox relay is `SKIP LOCKED`-safe) | 1 |
+| stream-processor | **StatefulSet**, 50 GiB PVC per pod | 2 / 4 GiB, 4 stream threads, 1 standby | KEDA 6–12 on `events.raw.v1` lag, slow (each step is a rebalance) | 5 |
+| embedding-worker | Deployment | 0.5 / 1 GiB | KEDA 1–12 on `catalog-embedder` lag (≤ partitions) | 1 |
+| enrichment-worker | Deployment | 0.5 / 768 MiB | KEDA 1–6 on `item-enricher` lag | — |
+
+Decisions:
+- **No CPU limits, memory limit = request.** CFS throttling causes tail-latency spikes, while memory overcommit causes OOM kills. JVM heap = 60% of the limit (40% for the stream processor, whose RocksDB lives off-heap with a bounded cache).
+- **Stream processor as a StatefulSet** with stable pod names (static membership via `HOSTNAME`) and a PVC per pod. A restart keeps its RocksDB state and skips the changelog restore. `podManagementPolicy: Parallel`.
+- **Rollouts:** `maxUnavailable: 0`, a startup probe so slow JIT/model loads aren't killed, readiness that includes Kafka Streams state, a `preStop` sleep of 10 s so endpoints drain before graceful shutdown (20 s), and `terminationGracePeriodSeconds: 45`.
+- **Topic partitions are a capacity decision made once** (`config/kafka/topics.prod.conf`): `events.raw.v1` has 48 = 12 stream pods × 4 threads. `catalog.items` and `catalog.embeddings` must have equal counts (KTable join).
+- **Security:** namespace enforces Pod Security `restricted`. Pods run as non-root (UID 10001) with a read-only root filesystem, drop all capabilities, use the RuntimeDefault seccomp profile and set `automountServiceAccountToken: false`. Ingress is default-deny, with intra-namespace traffic, the ingress namespace (public APIs only) and monitoring scrapes allowed. Secrets come from AWS Secrets Manager via External Secrets and are never in git.
+- **Config rollouts:** `recsys-config` is generated with a content hash, so a config change rolls the pods that use it. Jobs are immutable, so delete `job/kafka-topics` before re-applying when its config changes.
+
+Validated: `kubectl kustomize` + `kubeconform -strict` (Kubernetes 1.33 + CRD schemas) for both overlays, and an end-to-end run on kind (docs/load-test-results.md).
+
+## 19. Production hardening (Phase 3)
+
+- **AuthN/Z:** see §1. `Principals.requireUser` rejects acting for another user (`USER_MISMATCH`); catalog writes need the `catalog:write` scope.
+- **Load shedding:** `AdmissionFilter` caps concurrent `/v1` requests per pod (`recs.admission.max-in-flight`; 64 for the recommendation API, 128 for ingestion) and returns 503 with `Retry-After: 1` after a 20 ms wait for a slot. Without it, virtual threads let an overloaded pod queue without bound until it was OOM-killed (seen in the capacity ramp). Alert: `ApiLoadShedding`.
+- **Catalog outbox:** §3.2.
+- **Shared OpenAI budget:** all worker replicas add spend to one Redis ledger (`INCRBYFLOAT openai:spend:<yyyy-MM>`). `BudgetGuard` caches the total for 30 s, and if Redis is down it falls back to counting locally. It never fails open on the budget.
+- **Tracing:** OTLP export (Jaeger locally, an OTel collector in K8s), with Kafka template/listener observation so a trace spans ingestion → Kafka → workers. Sampling defaults to 10% locally and 5% in prod.
+- **Breaker metrics:** Redis and Qdrant circuit-breaker states are exported (`resilience4j_circuitbreaker_state`) and alerted on.

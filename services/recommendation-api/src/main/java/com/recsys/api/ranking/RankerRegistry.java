@@ -40,9 +40,30 @@ public final class RankerRegistry {
   private final Path root;
   private final MeterRegistry metrics;
 
+  private final io.micrometer.core.instrument.MultiGauge modelInfo;
+
   public RankerRegistry(String modelDir, MeterRegistry metrics) {
     this.root = modelDir == null ? null : Path.of(modelDir, "ranker");
     this.metrics = metrics;
+    this.modelInfo =
+        io.micrometer.core.instrument.MultiGauge.builder("recs_api_model_info")
+            .description("Loaded ranker models (value 1) by domain, pointer and version")
+            .register(metrics);
+  }
+
+  private void publishModelInfo() {
+    modelInfo.register(
+        loadedVersions.entrySet().stream()
+            .map(
+                e -> {
+                  String[] dp = e.getKey().split("/");
+                  return io.micrometer.core.instrument.MultiGauge.Row.of(
+                      io.micrometer.core.instrument.Tags.of(
+                          "domain", dp[0], "pointer", dp[1], "version", e.getValue()),
+                      1);
+                })
+            .toList(),
+        true);
   }
 
   private static final java.util.List<String> POINTERS = java.util.List.of("current", "candidate");
@@ -102,6 +123,7 @@ public final class RankerRegistry {
     } catch (IOException e) {
       log.warn("Model registry not readable: {}", e.toString());
     }
+    publishModelInfo();
   }
 
   static LightGbmRanker load(Path versionDir, String version) throws IOException {

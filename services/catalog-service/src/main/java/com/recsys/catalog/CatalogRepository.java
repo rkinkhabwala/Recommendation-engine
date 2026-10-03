@@ -27,6 +27,7 @@ public class CatalogRepository {
   public Optional<CatalogItemDto> upsert(CatalogItemDto i) {
     return jdbc.sql(
             """
+            WITH changed AS (
             INSERT INTO items (item_id, domain, title, creator_id, creator_name, genres, mood_tags,
                                duration_ms, release_date, explicit, available_regions, description,
                                transcript_summary)
@@ -50,6 +51,8 @@ public class CatalogRepository {
                    EXCLUDED.explicit, EXCLUDED.available_regions, EXCLUDED.description,
                    EXCLUDED.transcript_summary)
             RETURNING *
+            ), queued AS (INSERT INTO outbox (item_id) SELECT item_id FROM changed)
+            SELECT * FROM changed
             """)
         .param("id", i.itemId())
         .param("domain", i.domain())
@@ -75,11 +78,14 @@ public class CatalogRepository {
   public Optional<CatalogItemDto> applyEnrichment(String itemId, Enrichment e) {
     return jdbc.sql(
             """
-            UPDATE items SET enriched_moods = :moods, themes = :themes, topics = :topics, tone = :tone,
-                   reading_level = :level, enrichment_version = :version, seq = seq + 1, updated_at = now()
-            WHERE item_id = :id AND NOT deleted
-              AND (enrichment_version IS NULL OR enrichment_version < :version)
-            RETURNING *
+            WITH changed AS (
+              UPDATE items SET enriched_moods = :moods, themes = :themes, topics = :topics, tone = :tone,
+                     reading_level = :level, enrichment_version = :version, seq = seq + 1, updated_at = now()
+              WHERE item_id = :id AND NOT deleted
+                AND (enrichment_version IS NULL OR enrichment_version < :version)
+              RETURNING *
+            ), queued AS (INSERT INTO outbox (item_id) SELECT item_id FROM changed)
+            SELECT * FROM changed
             """)
         .param("id", itemId)
         .param("moods", e.moods().toArray(String[]::new))
@@ -102,28 +108,51 @@ public class CatalogRepository {
   /** Soft delete (keeps the row so the tombstone can be re-published). Returns the new seq. */
   public Optional<Long> markDeleted(String itemId) {
     return jdbc.sql(
-            "UPDATE items SET deleted = TRUE, seq = seq + 1, updated_at = now() "
-                + "WHERE item_id = :id AND NOT deleted RETURNING seq")
+            "WITH changed AS (UPDATE items SET deleted = TRUE, seq = seq + 1, updated_at = now() "
+                + "WHERE item_id = :id AND NOT deleted RETURNING item_id, seq), "
+                + "queued AS (INSERT INTO outbox (item_id) SELECT item_id FROM changed) "
+                + "SELECT seq FROM changed")
         .param("id", itemId)
         .query(Long.class)
         .optional();
   }
 
-  public void markPublished(String itemId, long seq) {
-    jdbc.sql("UPDATE items SET published_seq = GREATEST(published_seq, :seq) WHERE item_id = :id")
-        .param("id", itemId)
-        .param("seq", seq)
+  public record OutboxEntry(long id, String itemId) {}
+
+  /** Item state at publish time: the latest committed version (deleted → tombstone). */
+  public record PublishableItem(CatalogItemDto item, boolean deleted) {}
+
+  /**
+   * Claims the oldest outbox rows for this relay instance. Must run inside a transaction; {@code
+   * SKIP LOCKED} lets several replicas relay concurrently without publishing a row twice.
+   */
+  public List<OutboxEntry> lockOutbox(int limit) {
+    return jdbc.sql(
+            "SELECT id, item_id FROM outbox ORDER BY id LIMIT :limit FOR UPDATE SKIP LOCKED")
+        .param("limit", limit)
+        .query((rs, n) -> new OutboxEntry(rs.getLong("id"), rs.getString("item_id")))
+        .list();
+  }
+
+  public List<PublishableItem> current(java.util.Collection<String> itemIds) {
+    return jdbc.sql("SELECT * FROM items WHERE item_id = ANY(:ids)")
+        .param("ids", itemIds.toArray(String[]::new))
+        .query((rs, n) -> new PublishableItem(map(rs, n), rs.getBoolean("deleted")))
+        .list();
+  }
+
+  public void deleteOutbox(List<Long> ids) {
+    jdbc.sql("DELETE FROM outbox WHERE id = ANY(:ids)")
+        .param("ids", ids.toArray(Long[]::new))
         .update();
   }
 
-  public record Unpublished(CatalogItemDto item, boolean deleted) {}
-
-  public List<Unpublished> unpublished(int limit) {
+  /** [pending rows, age of the oldest in seconds]. */
+  public double[] outboxStats() {
     return jdbc.sql(
-            "SELECT * FROM items WHERE published_seq < seq ORDER BY updated_at LIMIT :limit")
-        .param("limit", limit)
-        .query((rs, n) -> new Unpublished(map(rs, n), rs.getBoolean("deleted")))
-        .list();
+            "SELECT count(*) AS n, coalesce(extract(epoch FROM now() - min(created_at)), 0) AS age FROM outbox")
+        .query((rs, n) -> new double[] {rs.getLong("n"), rs.getDouble("age")})
+        .single();
   }
 
   static CatalogItemDto map(ResultSet rs, int rowNum) throws SQLException {

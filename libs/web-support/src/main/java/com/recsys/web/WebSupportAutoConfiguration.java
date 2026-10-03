@@ -1,21 +1,44 @@
 package com.recsys.web;
 
-import java.util.List;
-import org.springframework.beans.factory.annotation.Value;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 
-/** Registers {@link ApiKeyFilter} with keys from {@code recs.security.api-keys}. */
-@AutoConfiguration
+/**
+ * Registers {@link AdmissionFilter} (load shedding, runs first), {@link AuthFilter} (see {@link
+ * SecuritySettings}) and the API error mapping.
+ */
+@AutoConfiguration(
+    afterName =
+        "org.springframework.boot.actuate.autoconfigure.metrics.CompositeMeterRegistryAutoConfiguration")
+@EnableConfigurationProperties({SecuritySettings.class, AdmissionSettings.class})
 public class WebSupportAutoConfiguration {
 
   @Bean
-  FilterRegistrationBean<ApiKeyFilter> apiKeyFilter(
-      @Value("${recs.security.api-keys:}") List<String> keys) {
+  @ConditionalOnExpression("${recs.admission.max-in-flight:0} > 0")
+  FilterRegistrationBean<AdmissionFilter> admissionFilter(
+      AdmissionSettings settings, ObjectProvider<MeterRegistry> registry) {
     var bean =
         new FilterRegistrationBean<>(
-            new ApiKeyFilter(keys.stream().filter(k -> !k.isBlank()).toList()));
+            new AdmissionFilter(
+                settings.maxInFlight(),
+                settings.queueTimeout(),
+                registry.getIfAvailable(SimpleMeterRegistry::new)));
+    bean.addUrlPatterns("/v1/*");
+    bean.setOrder(-1); // before auth: shedding must be cheap
+    return bean;
+  }
+
+  @Bean
+  FilterRegistrationBean<AuthFilter> authFilter(SecuritySettings settings) {
+    var bean =
+        new FilterRegistrationBean<>(
+            new AuthFilter(settings.mode(), settings.apiKeys(), settings.jwt()));
     bean.addUrlPatterns("/v1/*");
     bean.setOrder(0);
     return bean;

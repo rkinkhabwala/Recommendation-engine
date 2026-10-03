@@ -1,39 +1,134 @@
+# Alert rules. Severity: page (wake someone up), ticket (next business day), info.
+# Every alert links its runbook: docs/runbooks.md#<alert-name-lowercase>.
 groups:
   - name: recsys-slo
     rules:
+      - alert: RecsAvailabilityBurnFast
+        # 99.9% availability SLO, multi-window burn rate (2% of a 30-day budget in 1 h).
+        expr: |
+          (1 - sum(rate(http_server_requests_seconds_count{uri="/v1/recommendations",status!~"5.."}[1h]))
+             / sum(rate(http_server_requests_seconds_count{uri="/v1/recommendations"}[1h]))) > 14.4 * 0.001
+          and
+          (1 - sum(rate(http_server_requests_seconds_count{uri="/v1/recommendations",status!~"5.."}[5m]))
+             / sum(rate(http_server_requests_seconds_count{uri="/v1/recommendations"}[5m]))) > 14.4 * 0.001
+        labels: {severity: page, team: recsys}
+        annotations:
+          summary: Recommendations error budget burning 14x too fast
+          runbook_url: docs/runbooks.md#recsavailabilityburnfast
       - alert: ServingP99Above100ms
         expr: histogram_quantile(0.99, sum by (le) (rate(recs_api_request_seconds_bucket[5m]))) > 0.1
         for: 5m
-        labels: {severity: page}
-        annotations: {summary: "Recommendations p99 latency above 100 ms"}
+        labels: {severity: page, team: recsys}
+        annotations:
+          summary: "Recommendations p99 latency {{ $value | humanizeDuration }} (target < 100 ms)"
+          runbook_url: docs/runbooks.md#servingp99above100ms
       - alert: ServingP50Above30ms
         expr: histogram_quantile(0.50, sum by (le) (rate(recs_api_request_seconds_bucket[5m]))) > 0.03
         for: 10m
-        labels: {severity: ticket}
+        labels: {severity: ticket, team: recsys}
+        annotations:
+          summary: Recommendations p50 latency above 30 ms
+          runbook_url: docs/runbooks.md#servingp99above100ms
+      - alert: ApiLoadShedding
+        # AdmissionFilter is returning 503s: pods are at max in-flight (capacity, not a bug).
+        expr: |
+          sum by (application) (rate(recs_http_admission_rejected_total[5m]))
+            / sum by (application) (rate(http_server_requests_seconds_count{uri=~"/v1/.*"}[5m])) > 0.001
+        for: 3m
+        labels: {severity: page, team: recsys}
+        annotations:
+          summary: "{{ $labels.application }} is shedding {{ $value | humanizePercentage }} of requests (over capacity)"
+          runbook_url: docs/runbooks.md#apiloadshedding
       - alert: FeatureFreshnessP95Above5s
         expr: histogram_quantile(0.95, sum by (le) (rate(recs_feature_freshness_seconds_bucket{feature="user_short_term"}[5m]))) > 5
         for: 5m
-        labels: {severity: page}
-        annotations: {summary: "User actions take more than 5 s to reach Redis"}
+        labels: {severity: page, team: recsys}
+        annotations:
+          summary: "User actions take {{ $value | humanizeDuration }} to reach Redis (target < 5 s)"
+          runbook_url: docs/runbooks.md#featurefreshnessp95above5s
       - alert: FallbackRateAbove2Percent
         expr: sum(rate(recs_api_fallback_total{level!="NONE"}[5m])) / sum(rate(recs_api_fallback_total[5m])) > 0.02
         for: 10m
-        labels: {severity: ticket}
+        labels: {severity: ticket, team: recsys}
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of responses are degraded"
+          runbook_url: docs/runbooks.md#fallbackrateabove2percent
+      - alert: ServingCircuitOpen
+        expr: max by (name) (resilience4j_circuitbreaker_state{state="open"}) == 1
+        for: 2m
+        labels: {severity: page, team: recsys}
+        annotations:
+          summary: "Serving circuit breaker {{ $labels.name }} is open (dependency down)"
+          runbook_url: docs/runbooks.md#servingcircuitopen
+  - name: recsys-pipeline
+    rules:
       - alert: StreamConsumerLagGrowing
-        expr: max(kafka_consumer_fetch_manager_records_lag_max{job="recsys"}) > 10000
+        expr: max(kafka_consumer_fetch_manager_records_lag_max) > 10000
         for: 10m
-        labels: {severity: ticket}
+        labels: {severity: ticket, team: recsys}
+        annotations:
+          summary: "Kafka consumer lag {{ $value }} records"
+          runbook_url: docs/runbooks.md#streamconsumerlaggrowing
+      - alert: FeatureWriterStalled
+        expr: sum(rate(recs_ingest_events_total{result="accepted"}[10m])) > 1 and sum(rate(recs_feature_writes_total[10m])) == 0
+        for: 5m
+        labels: {severity: page, team: recsys}
+        annotations:
+          summary: Events are ingested but no features reach Redis
+          runbook_url: docs/runbooks.md#featurewriterstalled
+      - alert: CatalogOutboxBacklog
+        expr: max(recs_catalog_outbox_oldest_seconds) > 60
+        for: 5m
+        labels: {severity: ticket, team: recsys}
+        annotations:
+          summary: "Catalog changes are {{ $value | humanizeDuration }} behind Kafka"
+          runbook_url: docs/runbooks.md#catalogoutboxbacklog
+      - alert: EmbeddingDeadLetters
+        expr: sum(increase(recs_embedding_items_total{result="dlq"}[15m])) > 10
+        labels: {severity: ticket, team: recsys}
+        annotations:
+          summary: "{{ $value }} catalog items dead-lettered by the embedding worker"
+          runbook_url: docs/runbooks.md#embeddingdeadletters
+      - alert: TargetDown
+        expr: up{job="recsys"} == 0
+        for: 2m
+        labels: {severity: page, team: recsys}
+        annotations:
+          summary: "{{ $labels.instance }} is not being scraped (down?)"
+          runbook_url: docs/runbooks.md#targetdown
+  - name: recsys-models
+    rules:
+      - alert: RankerModelMissing
+        expr: sum by (domain, variant) (rate(recs_api_ranker_fallback_total[10m])) > 0
+        for: 30m
+        labels: {severity: ticket, team: recsys-ml}
+        annotations:
+          summary: "Variant {{ $labels.variant }} ({{ $labels.domain }}) wants lightgbm but serves the heuristic"
+          runbook_url: docs/runbooks.md#rankermodelmissing
+      - alert: RankerModelLoadFailed
+        expr: sum by (domain) (increase(recs_api_model_load_failures_total[15m])) > 0
+        labels: {severity: ticket, team: recsys-ml}
+        annotations:
+          summary: "A ranker model for {{ $labels.domain }} was refused (feature mismatch / corrupt)"
+          runbook_url: docs/runbooks.md#rankermodelloadfailed
   - name: recsys-openai-budget
     rules:
       - alert: OpenAiBudget50Percent
         expr: max(recs_openai_budget_used_ratio) >= 0.5
-        labels: {severity: info}
-        annotations: {summary: "OpenAI spend reached 50% of the monthly budget"}
+        labels: {severity: info, team: recsys}
+        annotations:
+          summary: OpenAI spend reached 50% of the monthly budget
+          runbook_url: docs/runbooks.md#openaibudget
       - alert: OpenAiBudget80Percent
         expr: max(recs_openai_budget_used_ratio) >= 0.8
-        labels: {severity: ticket}
-        annotations: {summary: "OpenAI spend reached 80% of the monthly budget"}
+        labels: {severity: ticket, team: recsys}
+        annotations:
+          summary: OpenAI spend reached 80% of the monthly budget
+          runbook_url: docs/runbooks.md#openaibudget
       - alert: OpenAiCircuitOpen
-        expr: sum(rate(recs_openai_request_seconds_count{outcome="circuit_open"}[5m])) > 0
-        for: 5m
-        labels: {severity: ticket}
+        expr: sum(rate(recs_openai_request_seconds_count{outcome=~"circuit_open|retryable"}[5m])) > 0
+        for: 15m
+        labels: {severity: ticket, team: recsys}
+        annotations:
+          summary: OpenAI calls failing; enrichment/embedding backlog is growing (serving unaffected)
+          runbook_url: docs/runbooks.md#openaicircuitopen

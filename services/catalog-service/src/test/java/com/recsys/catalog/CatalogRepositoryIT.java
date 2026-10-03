@@ -19,6 +19,7 @@ class CatalogRepositoryIT {
   static final PostgreSQLContainer<?> PG = new PostgreSQLContainer<>("postgres:16-alpine");
 
   static CatalogRepository repo;
+  static javax.sql.DataSource dataSource;
 
   @BeforeAll
   static void setUp() {
@@ -27,6 +28,7 @@ class CatalogRepositoryIT {
     ds.setUser(PG.getUsername());
     ds.setPassword(PG.getPassword());
     Flyway.configure().dataSource(ds).load().migrate();
+    dataSource = ds;
     repo = new CatalogRepository(JdbcClient.create(ds));
   }
 
@@ -65,18 +67,88 @@ class CatalogRepositoryIT {
     assertThat(second.genres()).containsExactly("jazz");
   }
 
-  @Test
-  void unpublishedVersionsAreFoundUntilMarked() {
-    var stored = repo.upsert(song("s_pub", "Red")).orElseThrow();
-    assertThat(repo.unpublished(100)).anyMatch(u -> u.item().itemId().equals("s_pub"));
-    repo.markPublished("s_pub", stored.seq());
-    assertThat(repo.unpublished(100)).noneMatch(u -> u.item().itemId().equals("s_pub"));
+  static class RecordingSink implements OutboxRelay.Sink {
+    final java.util.List<String> published =
+        java.util.Collections.synchronizedList(new java.util.ArrayList<>());
+    volatile boolean failing;
 
-    long delSeq = repo.markDeleted("s_pub").orElseThrow();
-    assertThat(delSeq).isEqualTo(stored.seq() + 1);
-    assertThat(repo.find("s_pub")).isEmpty();
-    assertThat(repo.unpublished(100))
-        .anyMatch(u -> u.item().itemId().equals("s_pub") && u.deleted());
+    public java.util.concurrent.CompletableFuture<?> publish(CatalogItemDto item) {
+      return send(item.itemId() + "@" + item.seq());
+    }
+
+    public java.util.concurrent.CompletableFuture<?> tombstone(String itemId) {
+      return send(itemId + "@deleted");
+    }
+
+    private java.util.concurrent.CompletableFuture<?> send(String what) {
+      if (failing) {
+        return java.util.concurrent.CompletableFuture.failedFuture(
+            new RuntimeException("kafka down"));
+      }
+      published.add(what);
+      return java.util.concurrent.CompletableFuture.completedFuture(null);
+    }
+  }
+
+  OutboxRelay relay(RecordingSink sink) {
+    var tm = new org.springframework.jdbc.datasource.DataSourceTransactionManager(dataSource);
+    return new OutboxRelay(
+        repo,
+        sink,
+        new org.springframework.transaction.support.TransactionTemplate(tm),
+        1000,
+        null);
+  }
+
+  @Test
+  void outboxPublishesLatestVersionOnceAndSurvivesKafkaOutages() {
+    var sink = new RecordingSink();
+    var relay = relay(sink);
+    relay.tick(); // drain anything left by other tests
+    sink.published.clear();
+
+    repo.upsert(song("s_ob", "One")).orElseThrow();
+    repo.upsert(song("s_ob", "Two")).orElseThrow(); // two versions queued
+    sink.failing = true;
+    org.assertj.core.api.Assertions.assertThatThrownBy(relay::relayBatch)
+        .isInstanceOf(IllegalStateException.class); // transaction rolled back
+    assertThat(repo.outboxStats()[0]).isEqualTo(2);
+
+    sink.failing = false;
+    assertThat(relay.relayBatch()).isEqualTo(2);
+    assertThat(sink.published).containsExactly("s_ob@2"); // collapsed to the latest version
+    assertThat(repo.outboxStats()[0]).isZero();
+
+    repo.markDeleted("s_ob").orElseThrow();
+    relay.relayBatch();
+    assertThat(sink.published).containsExactly("s_ob@2", "s_ob@deleted");
+  }
+
+  @Test
+  void concurrentRelaysNeverPublishARowTwice() throws Exception {
+    var sink = new RecordingSink();
+    var a = relay(sink);
+    var b = relay(sink);
+    a.tick();
+    sink.published.clear();
+    for (int i = 0; i < 300; i++) {
+      repo.upsert(song("s_cc" + i, "T")).orElseThrow();
+    }
+    try (var exec = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+      var f1 =
+          exec.submit(
+              () -> {
+                while (a.relayBatch() > 0) {}
+              });
+      var f2 =
+          exec.submit(
+              () -> {
+                while (b.relayBatch() > 0) {}
+              });
+      f1.get();
+      f2.get();
+    }
+    assertThat(sink.published).hasSize(300).doesNotHaveDuplicates();
   }
 
   @Test

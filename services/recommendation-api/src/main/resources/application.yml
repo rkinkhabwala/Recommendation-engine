@@ -1,9 +1,12 @@
 server:
   port: 8080
+  shutdown: graceful # finish in-flight requests on SIGTERM (K8s rolling updates)
   tomcat:
     threads:
       max: 400
 spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
   application:
     name: recommendation-api
   threads:
@@ -11,6 +14,8 @@ spring:
       enabled: true
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    template:
+      observation-enabled: true
     producer:
       # Served-recommendation log: off the request thread, lossy under backpressure by design.
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
@@ -25,6 +30,11 @@ spring:
 recs:
   security:
     api-keys: ${RECS_API_KEYS:dev-key}
+  # Load shedding (AdmissionFilter): concurrent /v1 requests per pod; beyond it → 503 + Retry-After.
+  # Sized from the capacity ramp (docs/load-test-results.md).
+  admission:
+    max-in-flight: ${RECS_MAX_IN_FLIGHT:64}
+    queue-timeout: ${RECS_ADMISSION_QUEUE_TIMEOUT:20ms}
   redis:
     uri: ${REDIS_URI:redis://localhost:6379}
   qdrant:

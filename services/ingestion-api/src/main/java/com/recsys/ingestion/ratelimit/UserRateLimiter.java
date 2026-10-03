@@ -7,7 +7,7 @@ import java.time.Duration;
 /**
  * Per-user token bucket (bot / runaway-client guard). In-process: with N ingestion replicas the
  * effective limit is N× the configured rate, which is acceptable for abuse protection.
- * TODO(phase-3): enforce at the gateway.
+ * TODO(phase-4): enforce at the gateway.
  */
 public final class UserRateLimiter {
   private static final class Bucket {

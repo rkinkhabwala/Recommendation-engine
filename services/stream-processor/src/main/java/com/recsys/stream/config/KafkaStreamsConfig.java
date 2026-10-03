@@ -49,6 +49,7 @@ class KafkaStreamsConfig {
     p.put(StreamsConfig.PROCESSING_GUARANTEE_CONFIG, StreamsConfig.EXACTLY_ONCE_V2);
     p.put(StreamsConfig.COMMIT_INTERVAL_MS_CONFIG, props.commitInterval().toMillis());
     p.put(StreamsConfig.NUM_STANDBY_REPLICAS_CONFIG, props.standbyReplicas());
+    p.put(StreamsConfig.NUM_STREAM_THREADS_CONFIG, Math.max(1, props.numThreads()));
     p.put(StreamsConfig.REPLICATION_FACTOR_CONFIG, props.replicationFactor());
     p.put(StreamsConfig.STATE_DIR_CONFIG, props.stateDir());
     p.put(StreamsConfig.STATESTORE_CACHE_MAX_BYTES_CONFIG, 10 * 1024 * 1024L);

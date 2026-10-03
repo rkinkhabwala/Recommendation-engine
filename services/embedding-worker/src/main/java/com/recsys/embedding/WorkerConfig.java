@@ -40,8 +40,16 @@ class WorkerConfig {
   }
 
   @Bean
-  EmbeddingClient embeddingClient(OpenAiSettings settings, MeterRegistry registry) {
-    return EmbeddingClients.create(settings, registry);
+  EmbeddingClient embeddingClient(
+      OpenAiSettings settings,
+      MeterRegistry registry,
+      @org.springframework.beans.factory.annotation.Value("${recs.openai.budget-redis-uri:}")
+          String ledgerUri) {
+    // Shared budget across replicas (and with the enrichment worker) when a Redis URI is set.
+    return EmbeddingClients.create(
+        settings,
+        registry,
+        EmbeddingClients.costMeter(settings, registry, EmbeddingClients.ledger(ledgerUri)));
   }
 
   @Bean(destroyMethod = "close")

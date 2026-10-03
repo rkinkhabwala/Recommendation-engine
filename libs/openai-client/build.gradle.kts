@@ -8,6 +8,7 @@ dependencies {
   implementation(libs.resilience4j.circuitbreaker)
   implementation(libs.resilience4j.ratelimiter)
   implementation("org.slf4j:slf4j-api")
+  implementation("io.lettuce:lettuce-core") // shared budget ledger
 
   testRuntimeOnly("ch.qos.logback:logback-classic")
 }

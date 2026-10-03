@@ -1,6 +1,9 @@
 server:
   port: 8082
+  shutdown: graceful # finish in-flight requests on SIGTERM (K8s rolling updates)
 spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
   application:
     name: catalog-service
   threads:
@@ -12,6 +15,8 @@ spring:
     password: ${POSTGRES_PASSWORD:recsys}
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    template:
+      observation-enabled: true
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
@@ -26,8 +31,12 @@ recs:
   security:
     api-keys: ${RECS_API_KEYS:dev-key}
   catalog:
-    reconcile-interval: 30s
+    outbox-interval: 200ms
+    outbox-batch-size: 1000
 management:
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING:0.1}
   endpoints:
     web:
       exposure:

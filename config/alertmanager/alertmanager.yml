@@ -1,0 +1,29 @@
+# Local Alertmanager config: routes by severity; receivers are placeholders (no delivery locally).
+# Production: deploy/k8s/overlays/prod-aws/alertmanager-secret.yaml (PagerDuty + Slack from
+# AWS Secrets Manager via External Secrets).
+route:
+  receiver: default
+  group_by: [alertname, domain]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: [severity="page"]
+      receiver: pager
+      repeat_interval: 1h
+    - matchers: [severity="ticket"]
+      receiver: tickets
+    - matchers: [severity="info"]
+      receiver: default
+inhibit_rules:
+  # A paging alert silences ticket-level noise for the same alert family.
+  - source_matchers: [severity="page"]
+    target_matchers: [severity="ticket"]
+    equal: [alertname]
+  # If a target is down, its latency/fallback alerts are symptoms.
+  - source_matchers: [alertname="TargetDown"]
+    target_matchers: [severity="ticket"]
+receivers:
+  - name: default
+  - name: pager
+  - name: tickets

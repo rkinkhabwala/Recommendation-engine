@@ -5,7 +5,7 @@
     <root>/ranker/<domain>/candidate                 passed the offline gate: eligible for A/B
     <root>/ranker/<domain>/current                   promoted (after an A/B win or the IPS gate)
 
-Works on a local path or a mounted volume; S3 would use the same layout. TODO(phase-3): object
+Works on a local path or a mounted volume; S3 would use the same layout. TODO(phase-4): object
 store + model approvals.
 """
 

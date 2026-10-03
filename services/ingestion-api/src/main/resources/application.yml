@@ -1,6 +1,9 @@
 server:
   port: 8081
+  shutdown: graceful # finish in-flight requests on SIGTERM (K8s rolling updates)
 spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
   application:
     name: ingestion-api
   threads:
@@ -26,6 +29,11 @@ spring:
 recs:
   security:
     api-keys: ${RECS_API_KEYS:dev-key}
+  # Load shedding (AdmissionFilter): concurrent /v1 requests per pod; beyond it → 503 + Retry-After.
+  # Sized from the capacity ramp (docs/load-test-results.md).
+  admission:
+    max-in-flight: ${RECS_MAX_IN_FLIGHT:128}
+    queue-timeout: ${RECS_ADMISSION_QUEUE_TIMEOUT:20ms}
   ingestion:
     max-batch-size: 500
     publish-timeout: 5s

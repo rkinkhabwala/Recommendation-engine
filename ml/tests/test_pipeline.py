@@ -74,3 +74,18 @@ def test_ab_report_and_srm():
     assert late["variants"]["control"]["lists"] == 25
     t = ab_report.proportion_test(100, 1000, 150, 1000)
     assert t["p_value"] < 0.01 and t["ci95"][0] > 0
+
+
+def test_clustered_ci_is_wider_than_naive_when_users_are_correlated():
+    rng = np.random.default_rng(0)
+    rows = []
+    for u in range(200):
+        p = rng.uniform(0.05, 0.6)  # strong per-user heterogeneity
+        n = 50
+        rows.append({"num": rng.binomial(n, p), "den": n})
+    c = pd.DataFrame(rows[:100])
+    t = pd.DataFrame(rows[100:])
+    clustered = ab_report.clustered_ratio_test(c, t, "num", "den")
+    naive = ab_report.proportion_test(int(c.num.sum()), int(c.den.sum()), int(t.num.sum()), int(t.den.sum()))
+    width = lambda r: r["ci95"][1] - r["ci95"][0]
+    assert width(clustered) > 1.5 * width(naive)

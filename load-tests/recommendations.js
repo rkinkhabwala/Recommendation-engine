@@ -11,17 +11,29 @@ const COUNTRIES = ['US', 'GB', 'DE', 'IN', 'BR', 'KR'];
 const DOMAINS = (__ENV.DOMAINS || 'song,song,song,video,video,post,book').split(',');
 const CONTEXT = { song: 'next_track', video: 'related', post: 'feed', book: 'home' };
 
-export const options = {
-  scenarios: {
-    recommendations: {
+// RAMP=100:1m,400:1m,... runs a capacity ramp (ramping-arrival-rate, req/s:duration stages)
+// instead of a constant rate; for capacity numbers prefer constant-rate steps (docs/load-test-results.md).
+const RAMP = __ENV.RAMP;
+const scenario = RAMP
+  ? {
+      executor: 'ramping-arrival-rate',
+      startRate: Number(RAMP.split(',')[0].split(':')[0]),
+      timeUnit: '1s',
+      stages: RAMP.split(',').map((s) => ({ target: Number(s.split(':')[0]), duration: s.split(':')[1] })),
+      preAllocatedVUs: 200,
+      maxVUs: 2000,
+    }
+  : {
       executor: 'constant-arrival-rate',
       rate: Number(__ENV.RATE || 200),
       timeUnit: '1s',
       duration: __ENV.DURATION || '2m',
       preAllocatedVUs: 100,
       maxVUs: 1000,
-    },
-  },
+    };
+
+export const options = {
+  scenarios: { recommendations: scenario },
   thresholds: {
     'http_req_duration{name:recommendations}': ['p(50)<30', 'p(99)<100'],
     http_req_failed: ['rate<0.01'],

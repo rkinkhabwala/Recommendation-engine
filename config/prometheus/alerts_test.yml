@@ -1,0 +1,78 @@
+# promtool test rules config/prometheus/alerts_test.yml
+rule_files: [alerts.yml]
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      # 3% of requests fail → burn rate 30x
+      - series: 'http_server_requests_seconds_count{uri="/v1/recommendations",status="200"}'
+        values: '0+970x90'
+      - series: 'http_server_requests_seconds_count{uri="/v1/recommendations",status="503"}'
+        values: '0+30x90'
+      - series: 'recs_api_fallback_total{level="NONE"}'
+        values: '0+90x30'
+      - series: 'recs_api_fallback_total{level="CACHED_POPULAR"}'
+        values: '0+10x30'
+      - series: 'recs_openai_budget_used_ratio'
+        values: '0.85x10'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: RecsAvailabilityBurnFast
+        exp_alerts:
+          - exp_labels: {severity: page, team: recsys}
+            exp_annotations:
+              summary: Recommendations error budget burning 14x too fast
+              runbook_url: docs/runbooks.md#recsavailabilityburnfast
+      - eval_time: 20m
+        alertname: FallbackRateAbove2Percent
+        exp_alerts:
+          - exp_labels: {severity: ticket, team: recsys}
+            exp_annotations:
+              summary: "10% of responses are degraded"
+              runbook_url: docs/runbooks.md#fallbackrateabove2percent
+      - eval_time: 5m
+        alertname: OpenAiBudget80Percent
+        exp_alerts:
+          - exp_labels: {severity: ticket, team: recsys}
+            exp_annotations:
+              summary: OpenAI spend reached 80% of the monthly budget
+              runbook_url: docs/runbooks.md#openaibudget
+  - interval: 1m
+    input_series:
+      # healthy: 0.05% errors → no burn alert
+      - series: 'http_server_requests_seconds_count{uri="/v1/recommendations",status="200"}'
+        values: '0+9995x90'
+      - series: 'http_server_requests_seconds_count{uri="/v1/recommendations",status="503"}'
+        values: '0+5x90'
+      - series: 'recs_ingest_events_total{result="accepted"}'
+        values: '0+600x30'
+      - series: 'recs_feature_writes_total{kind="user",result="applied"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: RecsAvailabilityBurnFast
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: FeatureWriterStalled
+        exp_alerts:
+          - exp_labels: {severity: page, team: recsys}
+            exp_annotations:
+              summary: Events are ingested but no features reach Redis
+              runbook_url: docs/runbooks.md#featurewriterstalled
+  - interval: 1m
+    input_series:
+      # 2% of recommendation requests shed for 10 minutes
+      - series: 'recs_http_admission_rejected_total{application="recommendation-api"}'
+        values: '0+20x15'
+      - series: 'http_server_requests_seconds_count{application="recommendation-api",uri="/v1/recommendations",status="200"}'
+        values: '0+980x15'
+      - series: 'http_server_requests_seconds_count{application="recommendation-api",uri="/v1/recommendations",status="503"}'
+        values: '0+20x15'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ApiLoadShedding
+        exp_alerts:
+          - exp_labels: {severity: page, team: recsys, application: recommendation-api}
+            exp_annotations:
+              summary: "recommendation-api is shedding 2% of requests (over capacity)"
+              runbook_url: docs/runbooks.md#apiloadshedding

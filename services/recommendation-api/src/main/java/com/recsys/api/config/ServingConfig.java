@@ -77,14 +77,27 @@ class ServingConfig {
     return new QdrantVectorIndex(client, Duration.ofSeconds(2));
   }
 
+  /** Breakers live in a registry bound to Micrometer: resilience4j_circuitbreaker_state{name}. */
   @Bean
-  CircuitBreaker redisBreaker() {
-    return breaker("redis");
+  io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry breakerRegistry(
+      MeterRegistry meters) {
+    var registry = io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry.ofDefaults();
+    io.github.resilience4j.micrometer.tagged.TaggedCircuitBreakerMetrics.ofCircuitBreakerRegistry(
+            registry)
+        .bindTo(meters);
+    return registry;
   }
 
   @Bean
-  CircuitBreaker qdrantBreaker() {
-    return breaker("qdrant");
+  CircuitBreaker redisBreaker(
+      io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry registry) {
+    return registry.circuitBreaker("redis", config());
+  }
+
+  @Bean
+  CircuitBreaker qdrantBreaker(
+      io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry registry) {
+    return registry.circuitBreaker("qdrant", config());
   }
 
   /**
@@ -92,17 +105,15 @@ class ServingConfig {
    * timeouts), not when a request's own tight stage budget expires: a 10 ms budget miss is a
    * latency policy, not an outage, and must not push healthy traffic into fallback.
    */
-  private static CircuitBreaker breaker(String name) {
-    return CircuitBreaker.of(
-        name,
-        CircuitBreakerConfig.custom()
-            .slidingWindowSize(100)
-            .minimumNumberOfCalls(50)
-            .failureRateThreshold(50)
-            .waitDurationInOpenState(Duration.ofSeconds(5))
-            .permittedNumberOfCallsInHalfOpenState(5)
-            .recordException(ServingConfig::isDependencyFailure)
-            .build());
+  private static CircuitBreakerConfig config() {
+    return CircuitBreakerConfig.custom()
+        .slidingWindowSize(100)
+        .minimumNumberOfCalls(50)
+        .failureRateThreshold(50)
+        .waitDurationInOpenState(Duration.ofSeconds(5))
+        .permittedNumberOfCallsInHalfOpenState(5)
+        .recordException(ServingConfig::isDependencyFailure)
+        .build();
   }
 
   static boolean isDependencyFailure(Throwable e) {

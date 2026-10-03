@@ -1,10 +1,15 @@
 server:
   port: 8083
+  shutdown: graceful # finish in-flight requests on SIGTERM (K8s rolling updates)
 spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
   application:
     name: stream-processor
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    template:
+      observation-enabled: true
     consumer:
       # feature-writer
       group-id: feature-writer
@@ -14,6 +19,7 @@ spring:
       isolation-level: read_committed
       max-poll-records: 500
     listener:
+      observation-enabled: true
       type: batch
       concurrency: 3
 recs:
@@ -25,6 +31,7 @@ recs:
     schema-registry-url: ${SCHEMA_REGISTRY_URL:http://localhost:8085}
     replication-factor: ${KAFKA_REPLICATION_FACTOR:1}
     standby-replicas: ${STREAMS_STANDBY_REPLICAS:0}
+    num-threads: ${STREAMS_NUM_THREADS:1}
     commit-interval: 100ms
     max-compaction-lag: 7d
     topology:
@@ -166,6 +173,9 @@ recs:
         follow-artist-weight: 1.0
         rating-weight-per-star: 0.75
 management:
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLING:0.1}
   endpoints:
     web:
       exposure:
@@ -174,6 +184,10 @@ management:
     health:
       probes:
         enabled: true
+      group:
+        # Not ready until Kafka Streams is RUNNING/REBALANCING (K8s readiness gates rollouts).
+        readiness:
+          include: readinessState,kafkaStreamsHealth
 logging:
   structured:
     format:

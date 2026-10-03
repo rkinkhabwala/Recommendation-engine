@@ -19,7 +19,7 @@ import org.apache.kafka.common.serialization.Serializer;
 /**
  * JSON serde for internal state stores and repartition topics owned by this service. Contract
  * topics use Avro; internal ones only need to be readable by this topology. float[] is encoded as
- * base64 float32 to keep accumulator state compact. TODO(phase-3): binary serde for state.
+ * base64 float32 to keep accumulator state compact. TODO(phase-4): binary serde for state.
  */
 public final class JsonSerde<T> implements Serde<T> {
   static final ObjectMapper MAPPER =

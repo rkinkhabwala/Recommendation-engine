@@ -4,7 +4,7 @@ import java.util.regex.Pattern;
 
 /**
  * Best-effort removal of direct identifiers from user free text before it leaves our systems.
- * Defence in depth: the request also carries no user id. TODO(phase-3): NER-based name detection.
+ * Defence in depth: the request also carries no user id. TODO(phase-4): NER-based name detection.
  */
 public final class PiiScrubber {
   private static final Pattern EMAIL =

@@ -38,9 +38,15 @@ class WorkerConfig {
   }
 
   @Bean
-  ChatClient chatClient(OpenAiSettings settings, MeterRegistry registry) {
+  ChatClient chatClient(
+      OpenAiSettings settings,
+      MeterRegistry registry,
+      @Value("${recs.openai.budget-redis-uri:}") String ledgerUri) {
     return EmbeddingClients.chat(
-        settings, registry, EmbeddingClients.costMeter(settings, registry), MockLlm.handlers());
+        settings,
+        registry,
+        EmbeddingClients.costMeter(settings, registry, EmbeddingClients.ledger(ledgerUri)),
+        MockLlm.handlers());
   }
 
   @Bean(destroyMethod = "shutdown")

@@ -1,0 +1,21 @@
+# helm upgrade --install qdrant qdrant/qdrant -n qdrant -f deploy/k8s/overlays/prod-aws/qdrant-values.yaml
+# 5M items x 512 dims: ~10 GB vectors + HNSW; 3 replicas for HA, int8 quantization keeps RAM ~4 GB/node.
+replicaCount: 3
+resources:
+  requests: {cpu: "2", memory: 16Gi}
+  limits: {memory: 16Gi}
+persistence:
+  size: 100Gi
+  storageClassName: gp3
+config:
+  cluster:
+    enabled: true
+  storage:
+    optimizers:
+      # Fewer, larger segments; limit indexing threads so re-index storms don't starve search (R19).
+      max_optimization_threads: 2
+    performance:
+      max_search_threads: 0
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1

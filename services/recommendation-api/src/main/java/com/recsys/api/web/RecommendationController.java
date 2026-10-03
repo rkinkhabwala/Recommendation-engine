@@ -4,6 +4,7 @@ import com.recsys.api.config.ApiProperties;
 import com.recsys.api.core.RecRequest;
 import com.recsys.api.core.RecommendationService;
 import com.recsys.web.ApiException;
+import com.recsys.web.Principals;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -43,6 +44,7 @@ public class RecommendationController {
     if (!ID.matcher(userId).matches()) {
       throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_USER_ID", "invalid userId");
     }
+    Principals.requireUser(userId);
     return experiments.assignment(domain, userId);
   }
 
@@ -82,6 +84,7 @@ public class RecommendationController {
     if (!ID.matcher(userId).matches()) {
       throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_USER_ID", "invalid userId");
     }
+    Principals.requireUser(userId);
     if (!props.enabledDomains().contains(domain)) {
       throw new ApiException(
           HttpStatus.BAD_REQUEST, "DOMAIN_NOT_ENABLED", domain + " is not enabled yet");

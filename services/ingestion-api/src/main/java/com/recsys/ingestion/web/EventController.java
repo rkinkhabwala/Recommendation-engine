@@ -11,6 +11,7 @@ import com.recsys.ingestion.web.EventDtos.EventBatchResponse;
 import com.recsys.ingestion.web.EventDtos.EventDto;
 import com.recsys.ingestion.web.EventDtos.Rejection;
 import com.recsys.web.ApiException;
+import com.recsys.web.Principals;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
 import java.time.Instant;
@@ -55,6 +56,7 @@ public class EventController {
           "max " + props.maxBatchSize() + " events");
     }
     Instant received = clock.instant();
+    var principal = Principals.current();
     List<Rejection> rejected = new ArrayList<>();
     List<Outgoing> outgoing = new ArrayList<>();
     List<Integer> indexes = new ArrayList<>();
@@ -62,6 +64,9 @@ public class EventController {
     for (int i = 0; i < events.size(); i++) {
       EventDto e = events.get(i);
       String error = EventValidator.validate(e);
+      if (error == null && !principal.mayActFor(e.userId())) {
+        error = "USER_MISMATCH"; // end users may only send their own events
+      }
       if (error == null && !rateLimiter.tryAcquire(e.userId())) {
         error = "RATE_LIMITED";
       }
